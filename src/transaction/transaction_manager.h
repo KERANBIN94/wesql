@@ -12,6 +12,7 @@ public:
     std::map<int, int> get_snapshot(int tx_id);  // active txs and min tx
     int get_current_tx_id() const;
     int get_next_cid(int tx_id);
+    int get_current_tx_id() const;
 
 private:
     std::atomic<int> next_tx_id{1};

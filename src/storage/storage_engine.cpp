@@ -4,6 +4,7 @@
 #include <cstring>
 #include <filesystem>
 
+// Removed misplaced create_directory and using namespace directive
 StorageEngine::StorageEngine(BufferCache& cache) : cache(cache), wal_log("wal.log", std::ios::app) {
     std::filesystem::create_directory("data");
 }
@@ -17,7 +18,7 @@ void StorageEngine::create_table(const std::string& table_name, const std::vecto
 
 void StorageEngine::create_index(const std::string& table_name, const std::string& column) {
     std::string key = table_name + "_" + column;
-    indexes[key] = new BPlusTree();
+    indexes[key] = std::make_unique<BPlusTree>();
 }
 
 void StorageEngine::insert_record(const std::string& table_name, const Record& record, int tx_id, int cid) {
@@ -30,21 +31,38 @@ void StorageEngine::insert_record(const std::string& table_name, const Record& r
 
     // Add item pointer
     ItemPointer ip;
-    ip.offset = page->header.pd_upper - sizeof(Record);  // Simplified allocation
-    ip.length = sizeof(Record);
+    size_t record_size = sizeof(Record);
+    ip.offset = page->header.pd_upper - record_size;
+    ip.length = record_size;
     page->item_pointers.push_back(ip);
 
     // Copy data
-    // In real: serialize record to data[ip.offset]
-    // Here: assume
+    memcpy(&page->data[ip.offset], &record, record_size);
 
     page->header.pd_lower += sizeof(ItemPointer);
     page->header.pd_upper -= ip.length;
 
     // Update index if exists
     for (auto& idx : indexes) {
-        if (idx.first.find(table_name) == 0) {
-            // idx.second->insert(record.columns[0], {file, page_id, ip.offset});  // Key is string, value is tid
+        const std::string& index_key = idx.first;
+        if (index_key.rfind(table_name + "_", 0) == 0) { // index is for this table
+            std::string column_name = index_key.substr(table_name.length() + 1);
+            
+            // Find column index from metadata
+            const auto& table_columns = metadata.at(table_name);
+            int column_index = -1;
+            for (size_t i = 0; i < table_columns.size(); ++i) {
+                if (table_columns[i] == column_name) {
+                    column_index = i;
+                    break;
+                }
+            }
+
+            if (column_index != -1) {
+                // NOTE: This assumes `record.columns` is accessible and correct.
+                // Proper serialization of `Record` is needed if it contains non-POD types.
+                idx.second->insert(record.columns[column_index], {file, page_id, (short)ip.offset});
+            }
         }
     }
 }
@@ -55,7 +73,8 @@ std::vector<Record> StorageEngine::scan_table(const std::string& table_name, int
         int page_id = 0;  // Simplified
         Page* page = cache.get_page(file, page_id);
         for (const auto& ip : page->item_pointers) {
-            Record rec;  // Deserialize from page->data[ip.offset]
+            Record rec;
+            memcpy(&rec, &page->data[ip.offset], ip.length);
             if (is_visible(rec, tx_id, cid, snapshot)) {
                 result.push_back(rec);
             }
@@ -71,10 +90,10 @@ std::vector<Record> StorageEngine::index_scan(const std::string& table_name, con
     if (it != indexes.end()) {
         auto tids = it->second->search(value);
         for (auto tid : tids) {
-            // Load page from tid (file, page_id, offset)
-            // Page* page = cache.get_page(tid.file, tid.page_id);
-            // Record rec = deserialize(page->data[tid.offset]);
-            // if (is_visible(rec, tx_id, cid, snapshot)) result.push_back(rec);
+            Page* page = cache.get_page(tid.file, tid.page_id);
+            Record rec;
+            memcpy(&rec, &page->data[tid.offset], sizeof(Record));
+            if (is_visible(rec, tx_id, cid, snapshot)) result.push_back(rec);
         }
     }
     return result;

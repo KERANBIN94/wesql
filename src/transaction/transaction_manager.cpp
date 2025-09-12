@@ -28,3 +28,7 @@ std::map<int, int> TransactionManager::get_snapshot(int tx_id) {
 int TransactionManager::get_next_cid(int tx_id) {
     return tx_cids[tx_id]++;
 }
+
+int TransactionManager::get_current_tx_id() const {
+    return next_tx_id - 1;
+}

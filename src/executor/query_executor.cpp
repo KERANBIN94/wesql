@@ -1,8 +1,7 @@
 #include "query_executor.h"
 #include <iostream>
 
-void execute_query(const ASTNode& ast, StorageEngine& storage, TransactionManager& tx_manager, int tx_id) {
-    auto snapshot = tx_manager.get_snapshot(tx_id);
+void execute_query(const ASTNode& ast, StorageEngine& storage, TransactionManager& tx_manager, int tx_id, const std::map<int, int>& snapshot) {
     int cid = tx_manager.get_next_cid(tx_id);
     if (ast.type == "CREATE") {
         if (ast.params.count("index")) {

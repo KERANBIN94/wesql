@@ -1,44 +1,92 @@
 #include "buffer_cache.h"
-#include "../storage/storage_engine.h"  // For Page
+#include "../storage/storage_engine.h"
 #include <stdexcept>
 
 BufferCache::BufferCache(size_t capacity) : capacity(capacity) {}
+
+void BufferCache::set_storage_engine(StorageEngine* storage_engine) {
+    storage_engine_ = storage_engine;
+}
 
 Page* BufferCache::get_page(const std::string& file, int page_id) {
     std::lock_guard<std::mutex> lock(mutex);
     std::string key = file + "_" + std::to_string(page_id);
     auto it = cache_map.find(key);
     if (it != cache_map.end()) {
-        // Move to front (MRU)
         lru_list.splice(lru_list.begin(), lru_list, it->second);
         return it->second->second;
     }
-    // Load from disk
-    Page* page = new Page();  // Allocate new
-    // Assume StorageEngine has a static load function, but for simplicity:
-    // In real: read_page_from_file(file, page_id, *page);
-    if (lru_list.size() >= capacity) evict();
-    lru_list.emplace_front(page_id, page);
+
+    if (lru_list.size() >= capacity) {
+        evict();
+    }
+
+    Page* page = new Page();
+    if (storage_engine_) {
+        storage_engine_->read_page_from_file(file, page_id, *page);
+    }
+
+    lru_list.emplace_front(key, page);
     cache_map[key] = lru_list.begin();
     return page;
 }
 
 void BufferCache::put_page(const std::string& file, int page_id, Page* page) {
-    // Similar to get, but update content
-    get_page(file, page_id);  // Ensure in cache
-    // Update page content (caller does)
-}
-
-void BufferCache::evict() {
-    auto last = lru_list.back();
-    std::string key = /* file from somewhere */ + "_" + std::to_string(last.first);
-    // Write back to disk if dirty (simplified: assume always write)
-    // write_page_to_file(file, last.second, last.first);
-    delete last.second;
-    cache_map.erase(key);
-    lru_list.pop_back();
+    std::lock_guard<std::mutex> lock(mutex);
+    std::string key = file + "_" + std::to_string(page_id);
+    auto it = cache_map.find(key);
+    if (it != cache_map.end()) {
+        // Page exists, update its content and mark as dirty.
+        *(it->second->second) = *page;
+        it->second->second->dirty = true;
+        lru_list.splice(lru_list.begin(), lru_list, it->second);
+        delete page; // Delete the new page as its content has been copied.
+    } else {
+        // Page does not exist, insert it.
+        if (lru_list.size() >= capacity) {
+            evict();
+        }
+        page->dirty = true;
+        lru_list.emplace_front(key, page);
+        cache_map[key] = lru_list.begin();
+    }
 }
 
 void BufferCache::flush_all() {
-    // Write all dirty pages
+    std::lock_guard<std::mutex> lock(mutex);
+    for (auto& pair : lru_list) {
+        Page* page = pair.second;
+        if (page->dirty && storage_engine_) {
+            const std::string& key = pair.first;
+            size_t separator_pos = key.find_last_of('_');
+            if (separator_pos != std::string::npos) {
+                std::string file = key.substr(0, separator_pos);
+                int page_id = std::stoi(key.substr(separator_pos + 1));
+                storage_engine_->write_page_to_file(file, *page, page_id);
+                page->dirty = false;
+            }
+        }
+    }
+}
+
+void BufferCache::evict() {
+    if (lru_list.empty()) {
+        return;
+    }
+    auto last = lru_list.back();
+    std::string key = last.first;
+    Page* page = last.second;
+
+    if (page->dirty && storage_engine_) {
+        size_t separator_pos = key.find_last_of('_');
+        if (separator_pos != std::string::npos) {
+            std::string file = key.substr(0, separator_pos);
+            int page_id = std::stoi(key.substr(separator_pos + 1));
+            storage_engine_->write_page_to_file(file, *page, page_id);
+        }
+    }
+
+    cache_map.erase(key);
+    lru_list.pop_back();
+    delete page;
 }

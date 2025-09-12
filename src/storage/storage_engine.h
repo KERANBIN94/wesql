@@ -45,6 +45,8 @@ public:
     std::vector<Record> scan_table(const std::string& table_name, int tx_id, int cid, const std::map<int, int>& snapshot);
     std::vector<Record> index_scan(const std::string& table_name, const std::string& column, const std::string& value, int tx_id, int cid, const std::map<int, int>& snapshot);
     bool has_index(const std::string& table_name, const std::string& column) const;
+    void write_page_to_file(const std::string& file, const Page& page, int page_id);
+    void read_page_from_file(const std::string& file, int page_id, Page& page);
 
 private:
     BufferCache& cache;
@@ -54,8 +56,6 @@ private:
     std::ofstream wal_log;
 
     bool is_visible(const Record& rec, int tx_id, int cid, const std::map<int, int>& snapshot);
-    void write_page_to_file(const std::string& file, const Page& page, int page_id);
-    void read_page_from_file(const std::string& file, int page_id, Page& page);
     void write_wal(const std::string& operation, const std::string& data);
 };
 
