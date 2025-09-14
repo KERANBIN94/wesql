@@ -15,6 +15,11 @@ void TransactionManager::commit(int tx_id) {
 void TransactionManager::rollback(int tx_id) {
     active_txs.erase(tx_id);
     tx_cids.erase(tx_id);
+    aborted_txs[tx_id] = true;
+}
+
+bool TransactionManager::is_committed(int tx_id) const {
+    return committed_txs.count(tx_id);
 }
 
 std::map<int, int> TransactionManager::get_snapshot(int tx_id) {
@@ -31,4 +36,8 @@ int TransactionManager::get_next_cid(int tx_id) {
 
 int TransactionManager::get_current_tx_id() const {
     return next_tx_id - 1;
+}
+
+bool TransactionManager::is_aborted(int tx_id) const {
+    return aborted_txs.count(tx_id);
 }

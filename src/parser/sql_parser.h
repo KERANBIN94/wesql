@@ -4,21 +4,29 @@
 #include <string>
 #include <vector>
 #include <map>
+#include "../common/value.h"
 
 struct WhereCondition {
     std::string column;
     std::string op;
-    std::string value;
+    Value value;
+};
+
+struct ColumnDefinition {
+    std::string name;
+    DataType type;
 };
 
 struct ASTNode {
     std::string type;
     std::string table_name;
-    std::vector<std::string> columns;
-    std::vector<std::string> values;
-    std::vector<std::pair<std::string, std::string>> column_types;
-    std::map<std::string, std::string> set_clause;
+    std::string index_name;
+    std::string index_column;
+    std::vector<ColumnDefinition> columns;
+    std::vector<Value> values;
+    std::map<std::string, Value> set_clause;
     std::vector<WhereCondition> where_conditions;
+    std::map<std::string, std::string> hints;
 };
 
 ASTNode parse_sql(const std::string& sql);

@@ -127,3 +127,99 @@ void BPlusTree::split_internal(std::shared_ptr<Node> node) {
 
     insert_into_parent(node, key_to_promote, new_internal);
 }
+
+// --- Deletion Implementation ---
+
+void BPlusTree::remove(const std::string& key, const Tid& tid) {
+    std::shared_ptr<Node> leaf = find_leaf(key);
+    remove_entry(leaf, key, tid);
+}
+
+void BPlusTree::remove_entry(std::shared_ptr<Node> node, const std::string& key, const Tid& tid) {
+    // Remove entry from node
+    auto it = std::lower_bound(node->keys.begin(), node->keys.end(), key);
+    size_t index = std::distance(node->keys.begin(), it);
+    node->keys.erase(it);
+    if (node->is_leaf) {
+        node->tids.erase(node->tids.begin() + index);
+    } else {
+        node->children.erase(node->children.begin() + index + 1);
+    }
+
+    // Handle underflow
+    if (node == root) {
+        if (root->keys.empty() && !root->children.empty()) {
+            root = root->children[0];
+            root->parent.reset();
+        }
+        return;
+    }
+
+    if (node->keys.size() < (degree -1) / 2) {
+        auto parent = node->parent.lock();
+        int node_idx = get_node_index(node);
+        int neighbor_idx = (node_idx == 0) ? 1 : node_idx - 1;
+        auto neighbor = parent->children[neighbor_idx];
+
+        if (node->keys.size() + neighbor->keys.size() < degree) {
+            if (node_idx == 0) { // node is left child
+                coalesce_nodes(node, neighbor, neighbor_idx, parent->keys[0]);
+            } else { // node is right child
+                coalesce_nodes(neighbor, node, node_idx, parent->keys[node_idx - 1]);
+            }
+        } else {
+            redistribute_nodes(node, neighbor, neighbor_idx);
+        }
+    }
+}
+
+void BPlusTree::coalesce_nodes(std::shared_ptr<Node> node, std::shared_ptr<Node> neighbor, int neighbor_index, const std::string& k_prime) {
+    // Simplified coalesce logic
+    if (!node->is_leaf) {
+        node->keys.push_back(k_prime);
+    }
+    node->keys.insert(node->keys.end(), neighbor->keys.begin(), neighbor->keys.end());
+    if (node->is_leaf) {
+        node->tids.insert(node->tids.end(), neighbor->tids.begin(), neighbor->tids.end());
+        node->next_leaf = neighbor->next_leaf;
+    } else {
+        node->children.insert(node->children.end(), neighbor->children.begin(), neighbor->children.end());
+        for(auto& child : neighbor->children) child->parent = node;
+    }
+
+    remove_entry(node->parent.lock(), k_prime, {});
+}
+
+void BPlusTree::redistribute_nodes(std::shared_ptr<Node> node, std::shared_ptr<Node> neighbor, int neighbor_index) {
+    // Simplified redistribution logic
+    auto parent = node->parent.lock();
+    if (neighbor_index < get_node_index(node)) { // neighbor is to the left
+        if (!node->is_leaf) {
+            node->keys.insert(node->keys.begin(), parent->keys[neighbor_index]);
+            parent->keys[neighbor_index] = neighbor->keys.back();
+            node->children.insert(node->children.begin(), neighbor->children.back());
+            neighbor->children.back()->parent = node;
+            neighbor->keys.pop_back();
+            neighbor->children.pop_back();
+        } else {
+            node->keys.insert(node->keys.begin(), neighbor->keys.back());
+            node->tids.insert(node->tids.begin(), neighbor->tids.back());
+            parent->keys[neighbor_index] = neighbor->keys.back();
+            neighbor->keys.pop_back();
+            neighbor->tids.pop_back();
+        }
+    } else { // neighbor is to the right
+        // Similar logic for right neighbor
+    }
+}
+
+int BPlusTree::get_node_index(std::shared_ptr<Node> node) {
+    auto parent = node->parent.lock();
+    if (!parent) return -1;
+    for (size_t i = 0; i < parent->children.size(); ++i) {
+        if (parent->children[i] == node) {
+            return i;
+        }
+    }
+    return -1;
+}
