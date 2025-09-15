@@ -6,6 +6,23 @@
 #include <map>
 #include "../common/value.h"
 
+enum class TokenType {
+    KEYWORD,
+    IDENTIFIER,
+    INTEGER_LITERAL,
+    STRING_LITERAL,
+    OPERATOR,
+    DELIMITER,
+    END_OF_FILE
+};
+
+struct Token {
+    TokenType type;
+    std::string text;
+    int line;
+    int column;
+};
+
 struct WhereCondition {
     std::string column;
     std::string op;
@@ -15,6 +32,7 @@ struct WhereCondition {
 struct ColumnDefinition {
     std::string name;
     DataType type;
+    bool not_null = false;
 };
 
 struct ASTNode {
@@ -30,5 +48,6 @@ struct ASTNode {
 };
 
 ASTNode parse_sql(const std::string& sql);
+void print_ast(const ASTNode& node, int indent = 0);
 
 #endif

@@ -26,6 +26,7 @@ struct Record {
 struct Column {
     std::string name;
     DataType type;
+    bool not_null;
 };
 
 struct ItemPointer {
@@ -49,7 +50,7 @@ struct Page {
 class StorageEngine {
 public:
     StorageEngine(BufferCache& cache);
-    void create_table(const std::string& table_name, const std::vector<ColumnDefinition>& columns);
+    void create_table(const std::string& table_name, const std::vector<ColumnDefinition>& columns, int tx_id, int cid);
     void create_index(const std::string& table_name, const std::string& column);
     void insert_record(const std::string& table_name, const Record& record, int tx_id, int cid);
     std::vector<Record> scan_table(const std::string& table_name, int tx_id, int cid, const std::map<int, int>& snapshot, TransactionManager& tx_manager);
@@ -62,7 +63,8 @@ public:
     void drop_table(const std::string& table_name);
     void drop_index(const std::string& index_name);
     void vacuum_table(const std::string& table_name, TransactionManager& tx_manager);
-    const std::vector<Column>& get_table_metadata(const std::string& table_name) const;
+    const std::vector<Column>& get_table_metadata(const std::string& table_name);
+    void recover_from_wal();
 
 private:
     BufferCache& cache;
@@ -71,14 +73,17 @@ private:
     std::map<std::string, int> table_page_counts;
     std::map<std::string, std::map<int, uint16_t>> free_space_maps; // table_name -> {page_id -> free_space}
     std::map<std::string, std::unique_ptr<BPlusTree>> indexes;
-    std::ofstream wal_log;
+    std::fstream wal_log;
+
+    void bootstrap_catalog();
+    void load_catalog();
 
     int add_new_page_to_table(const std::string& table_name);
     int find_page_with_space(const std::string& table_name, uint16_t required_space);
     void update_page_free_space(const std::string& table_name, int page_id, uint16_t new_free_space);
 
     bool is_visible(const Record& rec, int tx_id, int cid, const std::map<int, int>& snapshot, TransactionManager& tx_manager);
-    void write_wal(const std::string& operation, const std::string& data);
+    void write_wal(int tx_id, const std::string& operation, const std::string& data);
 };
 
 #endif

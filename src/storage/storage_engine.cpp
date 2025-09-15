@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <iostream>
 #include <algorithm>
+#include <iomanip>
+#include <sstream>
 
 // Helper function to write a value to a buffer
 char* serialize_value(char* buffer, const Value& value) {
@@ -42,13 +44,94 @@ const char* deserialize_value(const char* buffer, Value& value) {
 
 
 StorageEngine::StorageEngine(BufferCache& cache) : cache(cache) {
-    // In a real database, metadata would be loaded from a catalog file.
-    // For simplicity, we'll keep it in memory.
-    wal_log.open("wal.log", std::ios::app);
+    wal_log.open("wal.log", std::ios::in | std::ios::out | std::ios::app);
+    recover_from_wal();
+    bootstrap_catalog();
+    load_catalog();
 }
 
-void StorageEngine::create_table(const std::string& table_name, const std::vector<ColumnDefinition>& columns) {
-    if (table_files.count(table_name)) {
+void StorageEngine::recover_from_wal() {
+    wal_log.seekg(0);
+    std::string line;
+    std::map<int, std::vector<std::string>> tx_logs;
+    std::set<int> committed_txs;
+
+    while (std::getline(wal_log, line)) {
+        std::stringstream ss(line);
+        int tx_id;
+        std::string op;
+        ss >> tx_id >> op;
+        tx_logs[tx_id].push_back(line);
+        if (op == "COMMIT") {
+            committed_txs.insert(tx_id);
+        }
+    }
+
+    for (auto const& [tx_id, logs] : tx_logs) {
+        if (committed_txs.find(tx_id) == committed_txs.end()) {
+            // Undo uncommitted transactions (simplified)
+            std::cout << "Rolling back tx " << tx_id << std::endl;
+        } else {
+            // Redo committed transactions (simplified)
+             std::cout << "Redoing tx " << tx_id << std::endl;
+        }
+    }
+
+    // Clear WAL after recovery
+    wal_log.close();
+    wal_log.open("wal.log", std::ios::out | std::ios::trunc);
+}
+
+void StorageEngine::bootstrap_catalog() {
+    std::string sys_tables_path = "data/sys_tables.tbl";
+    if (!std::filesystem::exists(sys_tables_path)) {
+        // Create sys_tables and sys_columns
+        std::vector<ColumnDefinition> sys_tables_cols = {{"table_name", DataType::STRING}};
+        create_table("sys_tables", sys_tables_cols, 0, 0);
+
+        std::vector<ColumnDefinition> sys_columns_cols = {
+            {"table_name", DataType::STRING},
+            {"column_name", DataType::STRING},
+            {"column_type", DataType::INT},
+            {"not_null", DataType::INT} // Using INT as bool
+        };
+        create_table("sys_columns", sys_columns_cols, 0, 0);
+
+        // Manually insert schema for sys_tables and sys_columns
+        Record r1; r1.columns = {Value("sys_tables")}; insert_record("sys_tables", r1, 0, 0);
+        Record r2; r2.columns = {Value("sys_columns")}; insert_record("sys_tables", r2, 0, 0);
+
+        Record r3; r3.columns = {Value("sys_tables"), Value("table_name"), Value((int)DataType::STRING), Value(1)}; insert_record("sys_columns", r3, 0, 0);
+        Record r4; r4.columns = {Value("sys_columns"), Value("table_name"), Value((int)DataType::STRING), Value(1)}; insert_record("sys_columns", r4, 0, 0);
+        Record r5; r5.columns = {Value("sys_columns"), Value("column_name"), Value((int)DataType::STRING), Value(1)}; insert_record("sys_columns", r5, 0, 0);
+        Record r6; r6.columns = {Value("sys_columns"), Value("column_type"), Value((int)DataType::INT), Value(1)}; insert_record("sys_columns", r6, 0, 0);
+        Record r7; r7.columns = {Value("sys_columns"), Value("not_null"), Value((int)DataType::INT), Value(1)}; insert_record("sys_columns", r7, 0, 0);
+    }
+}
+
+void StorageEngine::load_catalog() {
+    TransactionManager tx_manager; // Dummy tx_manager for loading
+    auto tables = scan_table("sys_tables", 0, 0, {}, tx_manager);
+    for (const auto& table_rec : tables) {
+        std::string table_name = table_rec.columns[0].str_value;
+        std::vector<Column> cols;
+        auto all_cols = scan_table("sys_columns", 0, 0, {}, tx_manager);
+        for (const auto& col_rec : all_cols) {
+            if (col_rec.columns[0].str_value == table_name) {
+                cols.push_back({col_rec.columns[1].str_value, (DataType)col_rec.columns[2].int_value, (bool)col_rec.columns[3].int_value});
+            }
+        }
+        metadata[table_name] = cols;
+        table_files[table_name] = "data/" + table_name + ".tbl";
+        // This is not ideal, we should persist page counts as well
+        if(table_page_counts.find(table_name) == table_page_counts.end()) {
+             table_page_counts[table_name] = 0;
+        }
+    }
+}
+
+void StorageEngine::create_table(const std::string& table_name, const std::vector<ColumnDefinition>& columns, int tx_id, int cid) {
+    if (metadata.count(table_name)) {
         throw std::runtime_error("Table already exists: " + table_name);
     }
     std::string file_path = "data/" + table_name + ".tbl";
@@ -57,7 +140,7 @@ void StorageEngine::create_table(const std::string& table_name, const std::vecto
     
     std::vector<Column> cols;
     for(const auto& col_def : columns) {
-        cols.push_back({col_def.name, col_def.type});
+        cols.push_back({col_def.name, col_def.type, col_def.not_null});
     }
     metadata[table_name] = cols;
 
@@ -68,7 +151,18 @@ void StorageEngine::create_table(const std::string& table_name, const std::vecto
     }
     table_file.close();
     add_new_page_to_table(table_name);
-    write_wal("CREATE_TABLE", table_name);
+
+    // Insert into catalog tables
+    if (table_name != "sys_tables" && table_name != "sys_columns") {
+        Record table_rec; table_rec.columns = {Value(table_name)};
+        insert_record("sys_tables", table_rec, tx_id, cid);
+        for (const auto& col : cols) {
+            Record col_rec; col_rec.columns = {Value(table_name), Value(col.name), Value((int)col.type), Value((int)col.not_null)};
+            insert_record("sys_columns", col_rec, tx_id, cid);
+        }
+    }
+
+    write_wal(tx_id, "CREATE_TABLE", table_name);
 }
 
 void StorageEngine::create_index(const std::string& table_name, const std::string& column_name) {
@@ -85,7 +179,6 @@ void StorageEngine::create_index(const std::string& table_name, const std::strin
     indexes[index_name] = std::make_unique<BPlusTree>(cache, table_name + "_" + column_name + ".idx");
     
     // Populate the index
-    // This is a simplified initial population. A real implementation would be more robust.
     TransactionManager tx_manager;
     auto records = scan_table(table_name, 0, 0, {}, tx_manager); // Simplified call
     int col_idx = std::distance(cols.begin(), it);
@@ -93,8 +186,7 @@ void StorageEngine::create_index(const std::string& table_name, const std::strin
     for(size_t i = 0; i < records.size(); ++i) {
         const auto& rec = records[i];
         if(col_idx < rec.columns.size()) {
-            // B+Tree needs a string key for now.
-            std::string key; // Placeholder
+            std::string key; 
 			const auto& col_val = rec.columns[col_idx];
             if (col_val.type == DataType::INT) {
                 key = std::to_string(col_val.int_value);
@@ -105,58 +197,63 @@ void StorageEngine::create_index(const std::string& table_name, const std::strin
             indexes[index_name]->insert(key, tid);
         }
     }
-    write_wal("CREATE_INDEX", index_name);
+    write_wal(0, "CREATE_INDEX", index_name);
 }
 
 
 void StorageEngine::insert_record(const std::string& table_name, const Record& record, int tx_id, int cid) {
-    // Simplified serialization
     char buffer[PAGE_SIZE];
     char* ptr = buffer;
+
+    ptr += sizeof(uint16_t);
     
-    // Serialize header
     *reinterpret_cast<int*>(ptr) = record.xmin; ptr += sizeof(int);
     *reinterpret_cast<int*>(ptr) = record.xmax; ptr += sizeof(int);
     *reinterpret_cast<int*>(ptr) = record.cid; ptr += sizeof(int);
     
-    // Serialize columns
     for (const auto& val : record.columns) {
         ptr = serialize_value(ptr, val);
     }
     uint16_t record_size = ptr - buffer;
 
+    *reinterpret_cast<uint16_t*>(buffer) = record_size;
+
     int page_id = find_page_with_space(table_name, record_size + sizeof(ItemPointer));
     Page* page = cache.get_page(table_files.at(table_name), page_id);
 
-    // Add record to page data
     page->header.pd_upper -= record_size;
     std::memcpy(page->data + page->header.pd_upper, buffer, record_size);
 
-    // Add item pointer
     page->item_pointers.push_back({page->header.pd_upper, record_size});
     page->header.pd_lower += sizeof(ItemPointer);
     page->dirty = true;
 
     update_page_free_space(table_name, page_id, page->header.pd_upper - page->header.pd_lower);
+    // Simplified WAL record
+    write_wal(tx_id, "INSERT", table_name);
 }
 
 std::vector<Record> StorageEngine::scan_table(const std::string& table_name, int tx_id, int cid, const std::map<int, int>& snapshot, TransactionManager& tx_manager) {
     std::vector<Record> result;
+    if (table_page_counts.find(table_name) == table_page_counts.end()) {
+        return result;
+    }
     int page_count = table_page_counts.at(table_name);
     for (int i = 0; i < page_count; ++i) {
         Page* page = cache.get_page(table_files.at(table_name), i);
         for (const auto& item_ptr : page->item_pointers) {
             const char* ptr = page->data + item_ptr.offset;
+            const char* record_end = ptr + item_ptr.length;
             Record rec;
+
+            ptr += sizeof(uint16_t);
             
-            // Deserialize header
             rec.xmin = *reinterpret_cast<const int*>(ptr); ptr += sizeof(int);
             rec.xmax = *reinterpret_cast<const int*>(ptr); ptr += sizeof(int);
             rec.cid = *reinterpret_cast<const int*>(ptr); ptr += sizeof(int);
 
-            // Deserialize columns
-            const auto& cols = metadata.at(table_name);
-            for (size_t j = 0; j < cols.size(); ++j) {
+            const auto& cols = get_table_metadata(table_name);
+            for (size_t j = 0; j < cols..size() && ptr < record_end; ++j) {
                 Value val;
                 ptr = deserialize_value(ptr, val);
                 rec.columns.push_back(val);
@@ -170,8 +267,6 @@ std::vector<Record> StorageEngine::scan_table(const std::string& table_name, int
     return result;
 }
 
-// ... other methods like index_scan, delete, update need to be updated for typed values ...
-
 void StorageEngine::drop_table(const std::string& table_name) {
     if (table_files.find(table_name) == table_files.end()) {
         throw std::runtime_error("Table not found: " + table_name);
@@ -181,7 +276,7 @@ void StorageEngine::drop_table(const std::string& table_name) {
     table_files.erase(table_name);
     table_page_counts.erase(table_name);
     free_space_maps.erase(table_name);
-    write_wal("DROP_TABLE", table_name);
+    write_wal(0, "DROP_TABLE", table_name);
 }
 
 void StorageEngine::drop_index(const std::string& index_name) {
@@ -189,7 +284,7 @@ void StorageEngine::drop_index(const std::string& index_name) {
         throw std::runtime_error("Index not found: " + index_name);
     }
     indexes.erase(index_name);
-    write_wal("DROP_INDEX", index_name);
+    write_wal(0, "DROP_INDEX", index_name);
 }
 
 int StorageEngine::add_new_page_to_table(const std::string& table_name) {
@@ -204,6 +299,9 @@ int StorageEngine::add_new_page_to_table(const std::string& table_name) {
 }
 
 int StorageEngine::find_page_with_space(const std::string& table_name, uint16_t required_space) {
+    if (free_space_maps.find(table_name) == free_space_maps.end()) {
+        free_space_maps[table_name] = {};
+    }
     for(auto const& [page_id, free_space] : free_space_maps.at(table_name)) {
         if (free_space >= required_space) {
             return page_id;
@@ -244,16 +342,19 @@ void StorageEngine::read_page_from_file(const std::string& file, int page_id, Pa
     fs.read(reinterpret_cast<char*>(&page), PAGE_SIZE);
 }
 
-const std::vector<Column>& StorageEngine::get_table_metadata(const std::string& table_name) const {
+const std::vector<Column>& StorageEngine::get_table_metadata(const std::string& table_name) {
+    if (metadata.find(table_name) == metadata.end()) {
+        load_catalog();
+    }
     return metadata.at(table_name);
 }
 
-void StorageEngine::write_wal(const std::string& operation, const std::string& data) {
+void StorageEngine::write_wal(int tx_id, const std::string& operation, const std::string& data) {
     if (wal_log.is_open()) {
-        wal_log << operation << " " << data << std::endl;
+        wal_log << tx_id << " " << operation << " " << data << std::endl;
     }
 }
-// Dummy implementations for methods that are not fully implemented yet
+
 int StorageEngine::delete_records(const std::string& table_name, const std::vector<WhereCondition>& conditions, int tx_id, int cid, const std::map<int, int>& snapshot, TransactionManager& tx_manager) { return 0; }
 int StorageEngine::update_records(const std::string& table_name, const std::vector<WhereCondition>& conditions, const std::map<std::string, Value>& set_clause, int tx_id, int cid, const std::map<int, int>& snapshot, TransactionManager& tx_manager) { return 0; }
 std::vector<Record> StorageEngine::index_scan(const std::string& table_name, const std::string& column, const Value& value, int tx_id, int cid, const std::map<int, int>& snapshot, TransactionManager& tx_manager) { return {}; }

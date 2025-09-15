@@ -16,6 +16,7 @@ public:
     Page* get_page(const std::string& file, int page_id);
     void put_page(const std::string& file, int page_id, Page* page);
     void flush_all();
+    void print_stats();
 
 private:
     size_t capacity;
@@ -23,6 +24,10 @@ private:
     std::unordered_map<std::string, std::list<std::pair<std::string, Page*>>::iterator> cache_map;
     std::list<std::pair<std::string, Page*>> lru_list;
     std::mutex mutex;
+
+    size_t hits_ = 0;
+    size_t misses_ = 0;
+    size_t evictions_ = 0;
 
     void evict();
 };

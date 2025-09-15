@@ -1,6 +1,7 @@
 #include "buffer_cache.h"
 #include "../storage/storage_engine.h"
 #include <stdexcept>
+#include <iostream>
 
 BufferCache::BufferCache(size_t capacity) : capacity(capacity) {}
 
@@ -13,10 +14,12 @@ Page* BufferCache::get_page(const std::string& file, int page_id) {
     std::string key = file + "_" + std::to_string(page_id);
     auto it = cache_map.find(key);
     if (it != cache_map.end()) {
+        hits_++;
         lru_list.splice(lru_list.begin(), lru_list, it->second);
         return it->second->second;
     }
 
+    misses_++;
     if (lru_list.size() >= capacity) {
         evict();
     }
@@ -69,10 +72,15 @@ void BufferCache::flush_all() {
     }
 }
 
+void BufferCache::print_stats() {
+    std::cout << "Cache Stats: Hits=" << hits_ << ", Misses=" << misses_ << ", Evictions=" << evictions_ << std::endl;
+}
+
 void BufferCache::evict() {
     if (lru_list.empty()) {
         return;
     }
+    evictions_++;
     auto last = lru_list.back();
     std::string key = last.first;
     Page* page = last.second;

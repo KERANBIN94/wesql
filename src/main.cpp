@@ -7,12 +7,29 @@
 #include "transaction/transaction_manager.h"
 #include "optimizer/optimizer.h"
 #include "buffer/buffer_cache.h"
+#include "optimizer/plan_generator.h"
+
+// #define DEBUG_AST
+// #define DEBUG_PLAN
+
+void print_result_set(const ResultSet& rs) {
+    for (const auto& col : rs.columns) {
+        std::cout << col << "\t";
+    }
+    std::cout << std::endl;
+    for (const auto& row : rs.rows) {
+        for (const auto& val : row) {
+            std::cout << to_string(val) << "\t";
+        }
+        std::cout << std::endl;
+    }
+}
 
 int main() {
     BufferCache cache(100);
     StorageEngine storage(cache);
     cache.set_storage_engine(&storage);
-    TransactionManager tx_manager;
+    TransactionManager tx_manager(&storage);
     Optimizer optimizer;
 
     std::cout << "wesql DB. Enter SQL or 'exit' to quit." << std::endl;
@@ -30,36 +47,51 @@ int main() {
         try {
             auto ast = parse_sql(sql_line);
 
-            if (ast.type == "BEGIN") {
-                if (in_transaction) {
-                    throw std::runtime_error("Already in a transaction block.");
+#ifdef DEBUG_AST
+            print_ast(ast);
+#endif
+
+            if (ast.type == "BEGIN" || ast.type == "COMMIT" || ast.type == "ROLLBACK") {
+                 // Handle transaction commands directly
+                if (ast.type == "BEGIN") {
+                    if (in_transaction) {
+                        throw std::runtime_error("Already in a transaction block.");
+                    }
+                    current_tx_id = tx_manager.start_transaction();
+                    in_transaction = true;
+                } else if (ast.type == "COMMIT") {
+                    if (!in_transaction) {
+                        throw std::runtime_error("Not in a transaction block.");
+                    }
+                    tx_manager.commit(current_tx_id);
+                    in_transaction = false;
+                    current_tx_id = 0;
+                } else { // ROLLBACK
+                    if (!in_transaction) {
+                        throw std::runtime_error("Not in a transaction block.");
+                    }
+                    tx_manager.rollback(current_tx_id);
+                    in_transaction = false;
+                    current_tx_id = 0;
                 }
-                current_tx_id = tx_manager.start_transaction();
-                in_transaction = true;
-                execute_query(ast, storage, tx_manager, 0, {}); // No tx context needed for BEGIN itself
-            } else if (ast.type == "COMMIT") {
-                if (!in_transaction) {
-                    throw std::runtime_error("Not in a transaction block.");
-                }
-                tx_manager.commit(current_tx_id);
-                in_transaction = false;
-                current_tx_id = 0;
-                execute_query(ast, storage, tx_manager, 0, {});
-            } else if (ast.type == "ROLLBACK") {
-                if (!in_transaction) {
-                    throw std::runtime_error("Not in a transaction block.");
-                }
-                tx_manager.rollback(current_tx_id);
-                in_transaction = false;
-                current_tx_id = 0;
-                execute_query(ast, storage, tx_manager, 0, {});
+                // We can create a dummy plan for execution or handle in executor
+                auto plan = std::make_shared<LogicalPlanNode>(LogicalOperatorType::CREATE_TABLE); // Dummy
+                plan->table_name = ast.type; // Pass command type
+                execute_plan(plan, storage, tx_manager, 0, {});
+
             } else {
                 // Auto-commit mode or inside a transaction
                 int tx_id_for_query = in_transaction ? current_tx_id : tx_manager.start_transaction();
                 
-                auto optimized_ast = optimizer.optimize(ast, storage);
+                auto logical_plan = optimizer.optimize(ast, storage);
+
+#ifdef DEBUG_PLAN
+                print_logical_plan(logical_plan);
+#endif
+
                 auto snapshot = tx_manager.get_snapshot(tx_id_for_query);
-                execute_query(optimized_ast, storage, tx_manager, tx_id_for_query, snapshot);
+                ResultSet rs = execute_plan(logical_plan, storage, tx_manager, tx_id_for_query, snapshot);
+                print_result_set(rs);
 
                 if (!in_transaction) {
                     tx_manager.commit(tx_id_for_query);
@@ -75,5 +107,7 @@ int main() {
             }
         }
     }
+    cache.flush_all();
+    cache.print_stats();
     return 0;
 }
