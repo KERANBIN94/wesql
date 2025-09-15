@@ -1,7 +1,11 @@
 #include "bplus_tree.h"
 #include <algorithm>
 
-BPlusTree::BPlusTree(int degree) : root(std::make_shared<Node>()), degree(degree) {
+BPlusTree::BPlusTree(int degree) : root(std::make_shared<Node>()), degree(degree), cache(nullptr), index_name("") {
+    root->is_leaf = true;
+}
+
+BPlusTree::BPlusTree(BufferCache& cache, const std::string& index_name) : root(std::make_shared<Node>()), degree(4), cache(&cache), index_name(index_name) {
     root->is_leaf = true;
 }
 

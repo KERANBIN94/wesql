@@ -4,6 +4,7 @@
 #include <vector>
 #include <string>
 #include <memory>
+#include "../buffer/buffer_cache.h"
 
 struct Tid {
     std::string file;
@@ -24,6 +25,8 @@ private:
 
     std::shared_ptr<Node> root;
     int degree;
+    BufferCache* cache;
+    std::string index_name;
 
     // Insertion helpers
     std::shared_ptr<Node> find_leaf(const std::string& key);
@@ -40,6 +43,7 @@ private:
 
 public:
     BPlusTree(int degree = 4);
+    BPlusTree(BufferCache& cache, const std::string& index_name);
     void insert(const std::string& key, Tid tid);
     void remove(const std::string& key, const Tid& tid);
     std::vector<Tid> search(const std::string& key);

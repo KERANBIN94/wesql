@@ -1,18 +1,11 @@
 #include "query_executor.h"
 #include <iostream>
 #include <vector>
-#include <variant>
-
-// Define Value as a variant of supported types
-using Value = std::variant<int, std::string>;
+#include "../common/value.h"
 
 // Helper to print a Value
 void print_value(const Value& val) {
-    if (std::holds_alternative<int>(val)) {
-        std::cout << std::get<int>(val);
-    } else if (std::holds_alternative<std::string>(val)) {
-        std::cout << std::get<std::string>(val);
-    }
+    std::cout << to_string(val);
 }
 
 void execute_query(const ASTNode& ast, StorageEngine& storage, TransactionManager& tx_manager, int tx_id, const std::map<int, int>& snapshot) {
