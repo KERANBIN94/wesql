@@ -1,4 +1,4 @@
-@echo off
+CREATE DATABASE CompanyDB;@echo off
 setlocal EnableDelayedExpansion
 
 REM Assumptions:
