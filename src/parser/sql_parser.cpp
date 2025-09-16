@@ -32,20 +32,19 @@ std::vector<Token> tokenize(const std::string& sql) {
             continue;
         }
 
-        if (c == '"') {
+        if (c == '"' || c == '\'' || c == '`') {
+            char quote_char = c;
             std::string text;
-            text += c;
-            i++;
+            i++; // Consume the opening quote
             int start_col = col;
             col++;
-            while (i < sql.length() && sql[i] != '"') {
+            while (i < sql.length() && sql[i] != quote_char) {
                 text += sql[i];
                 i++;
                 col++;
             }
-            if (i < sql.length() && sql[i] == '"') {
-                text += sql[i];
-                i++;
+            if (i < sql.length() && sql[i] == quote_char) {
+                i++; // Consume the closing quote
                 col++;
                 tokens.push_back({TokenType::STRING_LITERAL, text, line, start_col});
             } else {
@@ -184,7 +183,7 @@ private:
         Value val;
         if (token.type == TokenType::STRING_LITERAL) {
             val.type = DataType::STRING;
-            val.str_value = token.text.substr(1, token.text.length() - 2);
+            val.str_value = token.text;
         } else if (token.type == TokenType::INTEGER_LITERAL) {
             try {
                 val.type = DataType::INT;
