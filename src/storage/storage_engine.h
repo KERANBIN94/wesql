@@ -48,6 +48,7 @@ public:
     const std::vector<Column>& get_table_metadata(const std::string& table_name);
     void recover_from_wal();
     void write_wal(int tx_id, const std::string& operation, const std::string& data);
+    void flush_buffer_pool();
 
 private:
     BufferCache& cache;

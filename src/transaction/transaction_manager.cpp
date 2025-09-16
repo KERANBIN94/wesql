@@ -17,6 +17,8 @@ void TransactionManager::commit(int tx_id) {
     }
     
     storage_engine_->write_wal(tx_id, "COMMIT", "");
+    storage_engine_->flush_buffer_pool();
+
     for (const auto& table_name : tx_locks_[tx_id]) {
         lock_manager_.unlock_table(tx_id, table_name);
     }

@@ -190,6 +190,7 @@ void StorageEngine::create_table(const std::string& table_name, const std::vecto
             insert_record("sys_columns", col_rec, tx_id, cid);
         }
     }
+    metadata[table_name] = cols;
 
     write_wal(tx_id, "CREATE_TABLE", table_name);
 }
@@ -415,6 +416,10 @@ void StorageEngine::write_wal(int tx_id, const std::string& operation, const std
     if (wal_log.is_open()) {
         wal_log << tx_id << " " << operation << " " << data << std::endl;
     }
+}
+
+void StorageEngine::flush_buffer_pool() {
+    cache.flush_all();
 }
 
 int StorageEngine::delete_records(const std::string& table_name, const std::vector<WhereCondition>& conditions, int tx_id, int cid, const std::map<int, int>& snapshot, TransactionManager& tx_manager) { return 0; }
