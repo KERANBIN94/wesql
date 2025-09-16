@@ -37,15 +37,36 @@ int main() {
     bool in_transaction = false;
     int current_tx_id = 0;
 
+    std::string sql_query;
     while (true) {
+        std::cout << (sql_query.empty() ? "> " : "-> ");
         std::string sql_line;
-        std::cout << "> ";
         std::getline(std::cin, sql_line);
-        if (sql_line == "exit") break;
-        if (sql_line.empty()) continue;
+
+        if (sql_line == "exit" && sql_query.empty()) {
+            break;
+        }
+
+        // Allow canceling a multi-line query
+        if (sql_line == "exit") {
+            sql_query.clear();
+            std::cout << "Query canceled." << std::endl;
+            continue;
+        }
+        
+        if (sql_query.empty() && sql_line.empty()) {
+            continue;
+        }
+
+        sql_query += sql_line + "\n";
+
+        size_t last_char_pos = sql_query.find_last_not_of(" \t\n\r");
+        if (last_char_pos == std::string::npos || sql_query[last_char_pos] != ';') {
+            continue; // Not a complete statement, get more input
+        }
 
         try {
-            auto ast = parse_sql(sql_line);
+            auto ast = parse_sql(sql_query);
 
 #ifdef DEBUG_AST
             print_ast(ast);
@@ -106,6 +127,8 @@ int main() {
                 current_tx_id = 0;
             }
         }
+        // Reset for the next query
+        sql_query.clear();
     }
     cache.flush_all();
     cache.print_stats();
