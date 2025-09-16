@@ -53,8 +53,7 @@ std::vector<Token> tokenize(const std::string& sql) {
         if (c == '"' || c == '\'') {
             char quote = c;
             std::string text;
-            text += c;
-            i++;
+            i++; // Consume the opening quote
             int start_col = col;
             col++;
             while (i < sql.length() && sql[i] != quote) {
@@ -253,7 +252,7 @@ private:
         Value val;
         if (token.type == TokenType::STRING_LITERAL) {
             val.type = DataType::STRING;
-            val.str_value = token.text.substr(1, token.text.length() - 2);
+            val.str_value = token.text;
         } else if (token.type == TokenType::INTEGER_LITERAL) {
             try {
                 val.type = DataType::INT;

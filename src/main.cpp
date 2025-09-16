@@ -36,8 +36,8 @@ int main() {
     bool in_transaction = false;
     int current_tx_id = 0;
 
+    std::string sql_query;
     while (true) {
-        std::string sql_statement;
         std::string sql_line;
         
         // Read lines until we get a complete statement (ending with semicolon)
@@ -120,6 +120,8 @@ int main() {
                 current_tx_id = 0;
             }
         }
+        // Reset for the next query
+        sql_query.clear();
     }
     
 exit_loop:
