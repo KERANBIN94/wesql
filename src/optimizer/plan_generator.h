@@ -9,7 +9,12 @@ enum class LogicalOperatorType {
     FILTER,
     PROJECTION,
     INSERT,
-    CREATE_TABLE
+    UPDATE,
+    DELETE,
+    CREATE_TABLE,
+    CREATE_INDEX,
+    DROP_TABLE,
+    DROP_INDEX
 };
 
 class LogicalPlanNode {
@@ -18,10 +23,14 @@ public:
     std::vector<std::shared_ptr<LogicalPlanNode>> children;
     // Specific operator fields
     std::string table_name;
+    std::string index_name; // For CREATE/DROP INDEX
+    std::string index_column; // For CREATE INDEX
     std::vector<WhereCondition> conditions;
     std::vector<ColumnDefinition> columns;
-    std::vector<Value> values;
+    std::vector<Value> values; // Single-row INSERT
+    std::vector<std::vector<Value>> multi_values; // Multi-row INSERT
     std::vector<std::string> projection_columns;
+    std::map<std::string, Value> set_clause; // For UPDATE statements
 
     LogicalPlanNode(LogicalOperatorType type) : type(type) {}
 };

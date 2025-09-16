@@ -90,12 +90,12 @@ std::vector<Token> tokenize(const std::string& sql) {
             continue;
         }
 
-        if (c == '=' || c == '<' || c == '>' || c == '!') {
+        if (c == '=' || c == '<' || c == '>' || c == '!' || c == '*') {
             int start_col = col;
             std::string op(1, c);
             i++;
             col++;
-            if (i < sql.length()) {
+            if (i < sql.length() && c != '*') { // * is always single character
                 if ((c == '!' || c == '<') && sql[i] == '=') {
                     op += '=';
                     i++;
@@ -252,12 +252,31 @@ private:
         node.table_name = consume().text;
 
         expect("VALUES");
-        expect("(");
-        while (peek().text != ")") {
-            node.values.push_back(parse_value());
-            if (peek().text == ",") consume();
+        
+        // Parse multiple value sets: (1, 'a'), (2, 'b'), (3, 'c')
+        do {
+            expect("(");
+            std::vector<Value> row_values;
+            while (peek().text != ")") {
+                row_values.push_back(parse_value());
+                if (peek().text == ",") consume();
+            }
+            expect(")");
+            node.multi_values.push_back(row_values);
+            
+            // Check if there's another row
+            if (peek().text == ",") {
+                consume(); // consume comma between value sets
+            } else {
+                break;
+            }
+        } while (!is_end() && peek().text != ";");
+        
+        // For backward compatibility, if only one row, also populate single values
+        if (node.multi_values.size() == 1) {
+            node.values = node.multi_values[0];
         }
-        expect(")");
+        
         return node;
     }
     
@@ -427,6 +446,15 @@ void print_ast(const ASTNode& node, int indent) {
         std::cout << indentation << "values:" << std::endl;
         for (const auto& val : node.values) {
             std::cout << indentation << "  - " << (val.type == DataType::INT ? std::to_string(val.int_value) : val.str_value) << std::endl;
+        }
+    }
+    if (!node.multi_values.empty()) {
+        std::cout << indentation << "multi_values:" << std::endl;
+        for (size_t i = 0; i < node.multi_values.size(); ++i) {
+            std::cout << indentation << "  row " << i << ":" << std::endl;
+            for (const auto& val : node.multi_values[i]) {
+                std::cout << indentation << "    - " << (val.type == DataType::INT ? std::to_string(val.int_value) : val.str_value) << std::endl;
+            }
         }
     }
     if (!node.set_clause.empty()) {

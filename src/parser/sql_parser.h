@@ -41,7 +41,8 @@ struct ASTNode {
     std::string index_name;
     std::string index_column;
     std::vector<ColumnDefinition> columns;
-    std::vector<Value> values;
+    std::vector<Value> values; // For single-row INSERT (backward compatibility)
+    std::vector<std::vector<Value>> multi_values; // For multi-row INSERT
     std::map<std::string, Value> set_clause;
     std::vector<WhereCondition> where_conditions;
     std::map<std::string, std::string> hints;
