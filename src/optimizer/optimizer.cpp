@@ -1,6 +1,6 @@
 #include "optimizer.h"
 
-std::shared_ptr<LogicalPlanNode> Optimizer::optimize(ASTNode& ast, StorageEngine& storage) {
+std::shared_ptr<LogicalPlanNode> Optimizer::optimize(ASTNode& ast) {
     // First, run semantic analysis
     semantic_analyzer_.analyze(ast, catalog_);
 

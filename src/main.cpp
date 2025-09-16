@@ -30,7 +30,7 @@ int main() {
     StorageEngine storage(cache);
     cache.set_storage_engine(&storage);
     TransactionManager tx_manager(&storage);
-    Optimizer optimizer;
+    Optimizer optimizer(storage);
 
     std::cout << "wesql DB. Enter SQL or 'exit' to quit." << std::endl;
 
@@ -104,7 +104,7 @@ int main() {
                 // Auto-commit mode or inside a transaction
                 int tx_id_for_query = in_transaction ? current_tx_id : tx_manager.start_transaction();
                 
-                auto logical_plan = optimizer.optimize(ast, storage);
+                auto logical_plan = optimizer.optimize(ast);
 
 #ifdef DEBUG_PLAN
                 print_logical_plan(logical_plan);

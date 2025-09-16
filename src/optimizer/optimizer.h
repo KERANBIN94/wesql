@@ -9,7 +9,8 @@
 
 class Optimizer {
 public:
-    std::shared_ptr<LogicalPlanNode> optimize(ASTNode& ast, StorageEngine& storage);
+    explicit Optimizer(StorageEngine& storage) : catalog_(&storage) {}
+    std::shared_ptr<LogicalPlanNode> optimize(ASTNode& ast);
 private:
     SemanticAnalyzer semantic_analyzer_;
     PlanGenerator plan_generator_;
