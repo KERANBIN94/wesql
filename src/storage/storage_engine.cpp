@@ -119,10 +119,32 @@ void StorageEngine::bootstrap_catalog() {
 }
 
 void StorageEngine::load_catalog() {
+    // Discover all table files and initialize page counts
+    if (std::filesystem::exists("data")) {
+        for (const auto& entry : std::filesystem::directory_iterator("data")) {
+            if (entry.is_regular_file() && entry.path().extension() == ".tbl") {
+                std::string table_name = entry.path().stem().string();
+                table_files[table_name] = entry.path().string();
+                auto file_size = std::filesystem::file_size(entry.path());
+                table_page_counts[table_name] = (file_size + PAGE_SIZE - 1) / PAGE_SIZE;
+                if (table_page_counts[table_name] == 0 && file_size > 0) {
+                    table_page_counts[table_name] = 1;
+                }
+            }
+        }
+    }
+
+    // If sys_tables doesn't have page count, it probably doesn't exist, so nothing to load.
+    if (table_page_counts.find("sys_tables") == table_page_counts.end()) {
+        return;
+    }
+
     TransactionManager tx_manager(this); // Dummy tx_manager for loading
     auto tables = scan_table("sys_tables", 0, 0, {}, tx_manager);
     for (const auto& table_rec : tables) {
         std::string table_name = table_rec.columns[0].str_value;
+        if (metadata.count(table_name)) continue; // Already loaded by directory scan, but let's get schema
+
         std::vector<Column> cols;
         auto all_cols = scan_table("sys_columns", 0, 0, {}, tx_manager);
         for (const auto& col_rec : all_cols) {
@@ -131,11 +153,6 @@ void StorageEngine::load_catalog() {
             }
         }
         metadata[table_name] = cols;
-        table_files[table_name] = "data/" + table_name + ".tbl";
-        // This is not ideal, we should persist page counts as well
-        if(table_page_counts.find(table_name) == table_page_counts.end()) {
-             table_page_counts[table_name] = 0;
-        }
     }
 }
 
@@ -181,7 +198,10 @@ void StorageEngine::create_index(const std::string& table_name, const std::strin
     if (!metadata.count(table_name)) {
         throw std::runtime_error("Table not found: " + table_name);
     }
-    const auto& cols = metadata.at(table_name);
+    if (metadata.find(table_name) == metadata.end()) {
+        throw std::runtime_error("Table not found in metadata: " + table_name);
+    }
+    const auto& cols = metadata[table_name];
     auto it = std::find_if(cols.begin(), cols.end(), [&](const Column& col){ return col.name == column_name; });
     if (it == cols.end()) {
         throw std::runtime_error("Column not found: " + column_name);
@@ -231,7 +251,10 @@ void StorageEngine::insert_record(const std::string& table_name, const Record& r
     *reinterpret_cast<uint16_t*>(buffer) = record_size;
 
     int page_id = find_page_with_space(table_name, record_size + sizeof(ItemPointer));
-    Page* page = cache.get_page(table_files.at(table_name), page_id);
+    if (table_files.find(table_name) == table_files.end()) {
+        throw std::runtime_error("Table not found in file mappings: " + table_name);
+    }
+    Page* page = cache.get_page(table_files[table_name], page_id);
 
     page->header.pd_upper -= record_size;
     std::memcpy(page->data + page->header.pd_upper, buffer, record_size);
@@ -254,9 +277,15 @@ std::vector<Record> StorageEngine::scan_table(const std::string& table_name, int
     if (table_page_counts.find(table_name) == table_page_counts.end()) {
         return result;
     }
-    int page_count = table_page_counts.at(table_name);
+    if (table_page_counts.find(table_name) == table_page_counts.end()) {
+        throw std::runtime_error("Table not found in page counts: " + table_name);
+    }
+    int page_count = table_page_counts[table_name];
     for (int i = 0; i < page_count; ++i) {
-        Page* page = cache.get_page(table_files.at(table_name), i);
+        if (table_files.find(table_name) == table_files.end()) {
+            throw std::runtime_error("Table not found in file mappings: " + table_name);
+        }
+        Page* page = cache.get_page(table_files[table_name], i);
         for (int j = 0; j < page->header.item_count; ++j) {
             const auto& item_ptr = page->item_pointers[j];
             const char* ptr = page->data + item_ptr.offset;
@@ -288,7 +317,10 @@ void StorageEngine::drop_table(const std::string& table_name) {
     if (table_files.find(table_name) == table_files.end()) {
         throw std::runtime_error("Table not found: " + table_name);
     }
-    std::filesystem::remove(table_files.at(table_name));
+    if (table_files.find(table_name) == table_files.end()) {
+        throw std::runtime_error("Table not found in file mappings: " + table_name);
+    }
+    std::filesystem::remove(table_files[table_name]);
     metadata.erase(table_name);
     table_files.erase(table_name);
     table_page_counts.erase(table_name);
@@ -305,12 +337,19 @@ void StorageEngine::drop_index(const std::string& index_name) {
 }
 
 int StorageEngine::add_new_page_to_table(const std::string& table_name) {
-    int new_page_id = table_page_counts.at(table_name)++;
+    if (table_page_counts.find(table_name) == table_page_counts.end()) {
+        throw std::runtime_error("Table not found in page counts: " + table_name);
+    }
+    if (table_files.find(table_name) == table_files.end()) {
+        throw std::runtime_error("Table not found in file mappings: " + table_name);
+    }
+    
+    int new_page_id = table_page_counts[table_name]++;
     Page new_page;
     new_page.header.pd_lower = sizeof(PageHeader);
     new_page.header.pd_upper = PAGE_SIZE;
     new_page.dirty = true;
-    write_page_to_file(table_files.at(table_name), new_page, new_page_id);
+    write_page_to_file(table_files[table_name], new_page, new_page_id);
     update_page_free_space(table_name, new_page_id, new_page.header.pd_upper - new_page.header.pd_lower);
     return new_page_id;
 }
@@ -319,7 +358,10 @@ int StorageEngine::find_page_with_space(const std::string& table_name, uint16_t 
     if (free_space_maps.find(table_name) == free_space_maps.end()) {
         free_space_maps[table_name] = {};
     }
-    for(auto const& [page_id, free_space] : free_space_maps.at(table_name)) {
+    if (free_space_maps.find(table_name) == free_space_maps.end()) {
+        free_space_maps[table_name] = {};
+    }
+    for(auto const& [page_id, free_space] : free_space_maps[table_name]) {
         if (free_space >= required_space) {
             return page_id;
         }
@@ -363,7 +405,10 @@ const std::vector<Column>& StorageEngine::get_table_metadata(const std::string& 
     if (metadata.find(table_name) == metadata.end()) {
         load_catalog();
     }
-    return metadata.at(table_name);
+    if (metadata.find(table_name) == metadata.end()) {
+        throw std::runtime_error("Table not found in metadata: " + table_name);
+    }
+    return metadata[table_name];
 }
 
 void StorageEngine::write_wal(int tx_id, const std::string& operation, const std::string& data) {

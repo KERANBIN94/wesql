@@ -3,3 +3,7 @@ build
 data
 .vscode
 GEMINI.md
+CLAUDE.md
+
+# log
+*.log
