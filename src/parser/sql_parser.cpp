@@ -148,7 +148,12 @@ private:
     bool is_end() const { return pos_ >= tokens_.size() || tokens_[pos_].type == TokenType::END_OF_FILE; }
     
     Token peek(int offset = 0) const {
-        if (pos_ + offset >= tokens_.size()) return tokens_.back(); // EOF token
+        if (pos_ + offset >= tokens_.size()) {
+            if (tokens_.empty()) {
+                return {TokenType::END_OF_FILE, "", 1, 1};
+            }
+            return tokens_.back(); // EOF token
+        }
         return tokens_[pos_ + offset];
     }
 
@@ -306,7 +311,15 @@ private:
                 DataType col_type;
                 if (col_type_str == "INT" || col_type_str == "INTEGER") {
                     col_type = DataType::INT;
-                } else if (col_type_str.rfind("VARCHAR", 0) == 0 || col_type_str == "TEXT") {
+                } else if (col_type_str == "VARCHAR") {
+                    col_type = DataType::STRING;
+                    // Handle VARCHAR(length) syntax
+                    if (peek().text == "(") {
+                        consume(); // consume (
+                        consume(); // consume length number
+                        expect(")"); // consume )
+                    }
+                } else if (col_type_str == "TEXT") {
                     col_type = DataType::STRING;
                 } else {
                     throw std::runtime_error("Unsupported column type: " + col_type_str);
