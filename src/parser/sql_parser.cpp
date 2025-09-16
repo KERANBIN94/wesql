@@ -90,6 +90,13 @@ std::vector<Token> tokenize(const std::string& sql) {
             continue;
         }
 
+        if (c == '*') {
+            tokens.push_back({TokenType::OPERATOR, std::string(1, c), line, col});
+            i++;
+            col++;
+            continue;
+        }
+
         if (c == '=' || c == '<' || c == '>' || c == '!') {
             int start_col = col;
             std::string op(1, c);

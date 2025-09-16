@@ -47,6 +47,9 @@ ResultSet execute_plan(std::shared_ptr<LogicalPlanNode> plan, StorageEngine& sto
             auto records = storage.scan_table(plan->table_name, tx_id, cid, snapshot, tx_manager);
             const auto& table_cols = storage.get_table_metadata(plan->table_name);
             
+            std::cout << "DEBUG: SEQ_SCAN found " << records.size() << " records in table " << plan->table_name << std::endl;
+            std::cout << "DEBUG: Table has " << table_cols.size() << " columns" << std::endl;
+            
             ResultSet rs;
             for(const auto& col : table_cols) {
                 rs.columns.push_back(col.name);
@@ -72,6 +75,16 @@ ResultSet execute_plan(std::shared_ptr<LogicalPlanNode> plan, StorageEngine& sto
         case LogicalOperatorType::PROJECTION: {
             auto child_rs = execute_plan(plan->children[0], storage, tx_manager, tx_id, snapshot);
             ResultSet rs;
+            
+            // Check if this is a wildcard projection (SELECT *)
+            if (plan->projection_columns.size() == 1 && plan->projection_columns[0] == "*") {
+                // Return all columns
+                rs.columns = child_rs.columns;
+                rs.rows = child_rs.rows;
+                return rs;
+            }
+            
+            // Normal projection with specific columns
             std::vector<int> proj_indices;
             for (const auto& proj_col : plan->projection_columns) {
                 for (size_t i = 0; i < child_rs.columns.size(); ++i) {

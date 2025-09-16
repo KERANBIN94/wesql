@@ -13,15 +13,34 @@
 // #define DEBUG_PLAN
 
 void print_result_set(const ResultSet& rs) {
+    if (rs.columns.empty()) {
+        std::cout << "No columns in result set." << std::endl;
+        return;
+    }
+    
+    // Print column headers
     for (const auto& col : rs.columns) {
         std::cout << col << "\t";
     }
     std::cout << std::endl;
-    for (const auto& row : rs.rows) {
-        for (const auto& val : row) {
-            std::cout << to_string(val) << "\t";
+    
+    // Print separator line
+    for (size_t i = 0; i < rs.columns.size(); ++i) {
+        std::cout << "--------\t";
+    }
+    std::cout << std::endl;
+    
+    // Print rows
+    if (rs.rows.empty()) {
+        std::cout << "(0 rows)" << std::endl;
+    } else {
+        for (const auto& row : rs.rows) {
+            for (const auto& val : row) {
+                std::cout << to_string(val) << "\t";
+            }
+            std::cout << std::endl;
         }
-        std::cout << std::endl;
+        std::cout << "(" << rs.rows.size() << " rows)" << std::endl;
     }
 }
 

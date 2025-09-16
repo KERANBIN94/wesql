@@ -4,6 +4,6 @@ data
 .vscode
 GEMINI.md
 CLAUDE.md
-
+.vs/
 # log
 *.log
