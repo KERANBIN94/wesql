@@ -6,7 +6,7 @@ CREATE TABLE Users (
 );
 
 -- 插入数据测试
-INSERT INTO Users (id, name, age) VALUES 
+INSERT INTO Users VALUES 
 (1, '张三', 25),
 (2, '李四', 30),
 (3, '王五', 22),
@@ -23,7 +23,7 @@ UPDATE Users SET age = 26 WHERE name = '张三';
 UPDATE Users SET name = '张大三' WHERE id = 1;
 
 -- 删除测试
-DELETE FROM Users WHERE age < 23;
+DELETE FROM Users WHERE age < 28;
 
 -- 索引操作测试
 CREATE INDEX idx_users_age ON Users(age);

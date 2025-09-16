@@ -233,6 +233,43 @@ void StorageEngine::create_index(const std::string& table_name, const std::strin
     write_wal(0, "CREATE_INDEX", index_name);
 }
 
+void StorageEngine::create_index(const std::string& index_name, const std::string& table_name, const std::string& column_name) {
+    if (!metadata.count(table_name)) {
+        throw std::runtime_error("Table not found: " + table_name);
+    }
+    if (metadata.find(table_name) == metadata.end()) {
+        throw std::runtime_error("Table not found in metadata: " + table_name);
+    }
+    const auto& cols = metadata[table_name];
+    auto it = std::find_if(cols.begin(), cols.end(), [&](const Column& col){ return col.name == column_name; });
+    if (it == cols.end()) {
+        throw std::runtime_error("Column not found: " + column_name);
+    }
+
+    // Use the user-provided index name
+    indexes[index_name] = std::make_unique<BPlusTree>(cache, index_name + ".idx");
+    
+    // Populate the index
+    TransactionManager tx_manager(this);
+    auto records = scan_table(table_name, 0, 0, {}, tx_manager); // Simplified call
+    int col_idx = static_cast<int>(std::distance(cols.begin(), it));
+
+    for(size_t i = 0; i < records.size(); ++i) {
+        const auto& rec = records[i];
+        if(col_idx < rec.columns.size()) {
+            std::string key; 
+			const auto& col_val = rec.columns[col_idx];
+            if (col_val.type == DataType::INT) {
+                key = std::to_string(col_val.int_value);
+            } else if (col_val.type == DataType::STRING) {
+                key = col_val.str_value;
+            }
+            Tid tid = {table_name, static_cast<int>(i / 100), static_cast<short>(i % 100)}; // Create proper Tid
+            indexes[index_name]->insert(key, tid);
+        }
+    }
+    write_wal(0, "CREATE_INDEX", index_name);
+}
 
 void StorageEngine::insert_record(const std::string& table_name, const Record& record, int tx_id, int cid) {
     char buffer[PAGE_SIZE];
@@ -422,8 +459,205 @@ void StorageEngine::flush_buffer_pool() {
     cache.flush_all();
 }
 
-int StorageEngine::delete_records(const std::string& table_name, const std::vector<WhereCondition>& conditions, int tx_id, int cid, const std::map<int, int>& snapshot, TransactionManager& tx_manager) { return 0; }
-int StorageEngine::update_records(const std::string& table_name, const std::vector<WhereCondition>& conditions, const std::map<std::string, Value>& set_clause, int tx_id, int cid, const std::map<int, int>& snapshot, TransactionManager& tx_manager) { return 0; }
+// Helper function to evaluate WHERE conditions against a record
+bool StorageEngine::evaluate_conditions(const Record& record, const std::vector<WhereCondition>& conditions, const std::vector<Column>& table_metadata) {
+    if (conditions.empty()) {
+        return true; // No conditions means all records match
+    }
+    
+    for (const auto& condition : conditions) {
+        bool condition_met = false;
+        
+        // Find the column index
+        int col_index = -1;
+        for (size_t i = 0; i < table_metadata.size(); ++i) {
+            if (table_metadata[i].name == condition.column) {
+                col_index = i;
+                break;
+            }
+        }
+        
+        if (col_index == -1 || col_index >= (int)record.columns.size()) {
+            return false; // Column not found, record doesn't match
+        }
+        
+        const Value& col_value = record.columns[col_index];
+        const Value& filter_value = condition.value;
+        
+        // Apply the condition
+        if (condition.op == "=") {
+            condition_met = (col_value.type == filter_value.type) &&
+                           ((col_value.type == DataType::INT && col_value.int_value == filter_value.int_value) ||
+                            (col_value.type == DataType::STRING && col_value.str_value == filter_value.str_value));
+        } else if (condition.op == "!=") {
+            condition_met = (col_value.type != filter_value.type) ||
+                           ((col_value.type == DataType::INT && col_value.int_value != filter_value.int_value) ||
+                            (col_value.type == DataType::STRING && col_value.str_value != filter_value.str_value));
+        } else if (condition.op == "<") {
+            if (col_value.type == DataType::INT && filter_value.type == DataType::INT) {
+                condition_met = col_value.int_value < filter_value.int_value;
+            } else if (col_value.type == DataType::STRING && filter_value.type == DataType::STRING) {
+                condition_met = col_value.str_value < filter_value.str_value;
+            }
+        } else if (condition.op == ">") {
+            if (col_value.type == DataType::INT && filter_value.type == DataType::INT) {
+                condition_met = col_value.int_value > filter_value.int_value;
+            } else if (col_value.type == DataType::STRING && filter_value.type == DataType::STRING) {
+                condition_met = col_value.str_value > filter_value.str_value;
+            }
+        } else if (condition.op == "<=") {
+            if (col_value.type == DataType::INT && filter_value.type == DataType::INT) {
+                condition_met = col_value.int_value <= filter_value.int_value;
+            } else if (col_value.type == DataType::STRING && filter_value.type == DataType::STRING) {
+                condition_met = col_value.str_value <= filter_value.str_value;
+            }
+        } else if (condition.op == ">=") {
+            if (col_value.type == DataType::INT && filter_value.type == DataType::INT) {
+                condition_met = col_value.int_value >= filter_value.int_value;
+            } else if (col_value.type == DataType::STRING && filter_value.type == DataType::STRING) {
+                condition_met = col_value.str_value >= filter_value.str_value;
+            }
+        } else if (condition.op == "LIKE") {
+            if (col_value.type == DataType::STRING && filter_value.type == DataType::STRING) {
+                condition_met = col_value.str_value.find(filter_value.str_value) != std::string::npos;
+            }
+        }
+        
+        if (!condition_met) {
+            return false; // AND logic: if any condition fails, the record doesn't match
+        }
+    }
+    
+    return true; // All conditions passed
+}
+
+int StorageEngine::delete_records(const std::string& table_name, const std::vector<WhereCondition>& conditions, int tx_id, int cid, const std::map<int, int>& snapshot, TransactionManager& tx_manager) {
+    int deleted_count = 0;
+    
+    if (table_page_counts.find(table_name) == table_page_counts.end()) {
+        return 0;
+    }
+    
+    const auto& table_cols = get_table_metadata(table_name);
+    int page_count = table_page_counts[table_name];
+    
+    for (int i = 0; i < page_count; ++i) {
+        Page* page = cache.get_page(table_files[table_name], i);
+        bool page_modified = false;
+        
+        for (int j = 0; j < page->header.item_count; ++j) {
+            const auto& item_ptr = page->item_pointers[j];
+            const char* ptr = page->data + item_ptr.offset;
+            const char* record_end = ptr + item_ptr.length;
+            Record rec;
+            
+            ptr += sizeof(uint16_t);
+            rec.xmin = *reinterpret_cast<const int*>(ptr); ptr += sizeof(int);
+            rec.xmax = *reinterpret_cast<const int*>(ptr); ptr += sizeof(int);
+            rec.cid = *reinterpret_cast<const int*>(ptr); ptr += sizeof(int);
+            
+            for (size_t k = 0; k < table_cols.size() && ptr < record_end; ++k) {
+                Value val;
+                ptr = deserialize_value(ptr, val);
+                rec.columns.push_back(val);
+            }
+            
+            if (is_visible(rec, tx_id, cid, snapshot, tx_manager) && evaluate_conditions(rec, conditions, table_cols)) {
+                // Mark record as deleted by setting xmax
+                char* xmax_ptr = page->data + item_ptr.offset + sizeof(uint16_t) + sizeof(int);
+                *reinterpret_cast<int*>(xmax_ptr) = tx_id;
+                page_modified = true;
+                deleted_count++;
+            }
+        }
+        
+        if (page_modified) {
+            page->dirty = true;
+        }
+    }
+    
+    return deleted_count;
+}
+
+int StorageEngine::update_records(const std::string& table_name, const std::vector<WhereCondition>& conditions, const std::map<std::string, Value>& set_clause, int tx_id, int cid, const std::map<int, int>& snapshot, TransactionManager& tx_manager) {
+    int updated_count = 0;
+    
+    if (table_page_counts.find(table_name) == table_page_counts.end()) {
+        return 0;
+    }
+    
+    const auto& table_cols = get_table_metadata(table_name);
+    int page_count = table_page_counts[table_name]; // Capture original page count to avoid infinite loop
+    
+    // First pass: collect records to update and mark them as deleted
+    std::vector<Record> records_to_update;
+    
+    for (int i = 0; i < page_count; ++i) {
+        Page* page = cache.get_page(table_files[table_name], i);
+        bool page_modified = false;
+        
+        for (int j = 0; j < page->header.item_count; ++j) {
+            const auto& item_ptr = page->item_pointers[j];
+            const char* ptr = page->data + item_ptr.offset;
+            const char* record_end = ptr + item_ptr.length;
+            Record rec;
+            
+            ptr += sizeof(uint16_t);
+            rec.xmin = *reinterpret_cast<const int*>(ptr); ptr += sizeof(int);
+            rec.xmax = *reinterpret_cast<const int*>(ptr); ptr += sizeof(int);
+            rec.cid = *reinterpret_cast<const int*>(ptr); ptr += sizeof(int);
+            
+            for (size_t k = 0; k < table_cols.size() && ptr < record_end; ++k) {
+                Value val;
+                ptr = deserialize_value(ptr, val);
+                rec.columns.push_back(val);
+            }
+            
+            if (is_visible(rec, tx_id, cid, snapshot, tx_manager) && evaluate_conditions(rec, conditions, table_cols)) {
+                // Mark old record as deleted
+                char* xmax_ptr = page->data + item_ptr.offset + sizeof(uint16_t) + sizeof(int);
+                *reinterpret_cast<int*>(xmax_ptr) = tx_id;
+                page_modified = true;
+                
+                // Store record for updating
+                records_to_update.push_back(rec);
+            }
+        }
+        
+        if (page_modified) {
+            page->dirty = true;
+        }
+    }
+    
+    // Second pass: insert updated records
+    for (const auto& old_rec : records_to_update) {
+        Record updated_rec = old_rec;
+        
+        // Apply SET clause
+        for (const auto& set_pair : set_clause) {
+            int col_index = -1;
+            for (size_t k = 0; k < table_cols.size(); ++k) {
+                if (table_cols[k].name == set_pair.first) {
+                    col_index = k;
+                    break;
+                }
+            }
+            if (col_index >= 0 && col_index < (int)updated_rec.columns.size()) {
+                updated_rec.columns[col_index] = set_pair.second;
+            }
+        }
+        
+        // Insert new record version
+        updated_rec.xmin = tx_id;
+        updated_rec.xmax = 0;
+        updated_rec.cid = cid;
+        
+        insert_record(table_name, updated_rec, tx_id, cid);
+        updated_count++;
+    }
+    
+    return updated_count;
+}
 std::vector<Record> StorageEngine::index_scan(const std::string& table_name, const std::string& column, const Value& value, int tx_id, int cid, const std::map<int, int>& snapshot, TransactionManager& tx_manager) { return {}; }
 void StorageEngine::vacuum_table(const std::string& table_name, TransactionManager& tx_manager) {}
 bool StorageEngine::has_index(const std::string& table_name, const std::string& column) const { return false; }

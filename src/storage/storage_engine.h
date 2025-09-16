@@ -34,6 +34,7 @@ public:
     StorageEngine(BufferCache& cache);
     void create_table(const std::string& table_name, const std::vector<ColumnDefinition>& columns, int tx_id, int cid);
     void create_index(const std::string& table_name, const std::string& column);
+    void create_index(const std::string& index_name, const std::string& table_name, const std::string& column);
     void insert_record(const std::string& table_name, const Record& record, int tx_id, int cid);
     std::vector<Record> scan_table(const std::string& table_name, int tx_id, int cid, const std::map<int, int>& snapshot, TransactionManager& tx_manager);
     std::vector<Record> index_scan(const std::string& table_name, const std::string& column, const Value& value, int tx_id, int cid, const std::map<int, int>& snapshot, TransactionManager& tx_manager);
@@ -67,6 +68,7 @@ private:
     void update_page_free_space(const std::string& table_name, int page_id, uint16_t new_free_space);
 
     bool is_visible(const Record& rec, int tx_id, int cid, const std::map<int, int>& snapshot, TransactionManager& tx_manager);
+    bool evaluate_conditions(const Record& record, const std::vector<WhereCondition>& conditions, const std::vector<Column>& table_metadata);
 };
 
 #endif

@@ -34,10 +34,26 @@ ResultSet execute_plan(std::shared_ptr<LogicalPlanNode> plan, StorageEngine& sto
             if (!tx_manager.lock_table(tx_id, plan->table_name, LockMode::EXCLUSIVE)) {
                 throw std::runtime_error("Failed to acquire exclusive lock for INSERT.");
             }
-            Record rec{tx_id, 0, cid, {}};
-            rec.columns = plan->values;
-            storage.insert_record(plan->table_name, rec, tx_id, cid);
-            std::cout << "1 row inserted." << std::endl;
+            
+            int rows_inserted = 0;
+            
+            // Handle multi-row INSERT
+            if (!plan->multi_values.empty()) {
+                for (const auto& row_values : plan->multi_values) {
+                    Record rec{tx_id, 0, cid, {}};
+                    rec.columns = row_values;
+                    storage.insert_record(plan->table_name, rec, tx_id, cid);
+                    rows_inserted++;
+                }
+            } else {
+                // Fallback to single-row INSERT for backward compatibility
+                Record rec{tx_id, 0, cid, {}};
+                rec.columns = plan->values;
+                storage.insert_record(plan->table_name, rec, tx_id, cid);
+                rows_inserted = 1;
+            }
+            
+            std::cout << rows_inserted << " row(s) inserted." << std::endl;
             return {};
         }
         case LogicalOperatorType::SEQ_SCAN: {
@@ -58,12 +74,79 @@ ResultSet execute_plan(std::shared_ptr<LogicalPlanNode> plan, StorageEngine& sto
         }
         case LogicalOperatorType::FILTER: {
             auto child_rs = execute_plan(plan->children[0], storage, tx_manager, tx_id, snapshot);
-            // This is a simplified filter implementation
-            // It assumes the filter is always on the first column
             ResultSet rs;
             rs.columns = child_rs.columns;
+            
             for (const auto& row : child_rs.rows) {
-                if (row[0].int_value > 0) { // Dummy condition
+                bool row_matches = true;
+                
+                // Check all WHERE conditions
+                for (const auto& condition : plan->conditions) {
+                    bool condition_met = false;
+                    
+                    // Find the column index
+                    int col_index = -1;
+                    for (size_t i = 0; i < rs.columns.size(); ++i) {
+                        if (rs.columns[i] == condition.column) {
+                            col_index = i;
+                            break;
+                        }
+                    }
+                    
+                    if (col_index == -1) {
+                        throw std::runtime_error("Column '" + condition.column + "' not found in result set");
+                    }
+                    
+                    // Apply the condition
+                    const Value& col_value = row[col_index];
+                    const Value& filter_value = condition.value;
+                    
+                    if (condition.op == "=") {
+                        condition_met = (col_value.type == filter_value.type) &&
+                                       ((col_value.type == DataType::INT && col_value.int_value == filter_value.int_value) ||
+                                        (col_value.type == DataType::STRING && col_value.str_value == filter_value.str_value));
+                    } else if (condition.op == "!=") {
+                        condition_met = (col_value.type != filter_value.type) ||
+                                       ((col_value.type == DataType::INT && col_value.int_value != filter_value.int_value) ||
+                                        (col_value.type == DataType::STRING && col_value.str_value != filter_value.str_value));
+                    } else if (condition.op == "<") {
+                        if (col_value.type == DataType::INT && filter_value.type == DataType::INT) {
+                            condition_met = col_value.int_value < filter_value.int_value;
+                        } else if (col_value.type == DataType::STRING && filter_value.type == DataType::STRING) {
+                            condition_met = col_value.str_value < filter_value.str_value;
+                        }
+                    } else if (condition.op == ">") {
+                        if (col_value.type == DataType::INT && filter_value.type == DataType::INT) {
+                            condition_met = col_value.int_value > filter_value.int_value;
+                        } else if (col_value.type == DataType::STRING && filter_value.type == DataType::STRING) {
+                            condition_met = col_value.str_value > filter_value.str_value;
+                        }
+                    } else if (condition.op == "<=") {
+                        if (col_value.type == DataType::INT && filter_value.type == DataType::INT) {
+                            condition_met = col_value.int_value <= filter_value.int_value;
+                        } else if (col_value.type == DataType::STRING && filter_value.type == DataType::STRING) {
+                            condition_met = col_value.str_value <= filter_value.str_value;
+                        }
+                    } else if (condition.op == ">=") {
+                        if (col_value.type == DataType::INT && filter_value.type == DataType::INT) {
+                            condition_met = col_value.int_value >= filter_value.int_value;
+                        } else if (col_value.type == DataType::STRING && filter_value.type == DataType::STRING) {
+                            condition_met = col_value.str_value >= filter_value.str_value;
+                        }
+                    } else if (condition.op == "LIKE") {
+                        if (col_value.type == DataType::STRING && filter_value.type == DataType::STRING) {
+                            // Simple LIKE implementation (contains)
+                            condition_met = col_value.str_value.find(filter_value.str_value) != std::string::npos;
+                        }
+                    }
+                    
+                    if (!condition_met) {
+                        row_matches = false;
+                        break; // AND logic: if any condition fails, the row doesn't match
+                    }
+                }
+                
+                if (row_matches) {
                     rs.rows.push_back(row);
                 }
             }
@@ -72,6 +155,14 @@ ResultSet execute_plan(std::shared_ptr<LogicalPlanNode> plan, StorageEngine& sto
         case LogicalOperatorType::PROJECTION: {
             auto child_rs = execute_plan(plan->children[0], storage, tx_manager, tx_id, snapshot);
             ResultSet rs;
+            
+            // Handle wildcard projection (SELECT *)
+            if (plan->projection_columns.size() == 1 && plan->projection_columns[0] == "*") {
+                // Return all columns
+                return child_rs;
+            }
+            
+            // Handle specific column projection
             std::vector<int> proj_indices;
             for (const auto& proj_col : plan->projection_columns) {
                 for (size_t i = 0; i < child_rs.columns.size(); ++i) {
@@ -90,6 +181,37 @@ ResultSet execute_plan(std::shared_ptr<LogicalPlanNode> plan, StorageEngine& sto
                 rs.rows.push_back(new_row);
             }
             return rs;
+        }
+        case LogicalOperatorType::UPDATE: {
+            if (!tx_manager.lock_table(tx_id, plan->table_name, LockMode::EXCLUSIVE)) {
+                throw std::runtime_error("Failed to acquire exclusive lock for UPDATE.");
+            }
+            int updated_rows = storage.update_records(plan->table_name, plan->conditions, plan->set_clause, tx_id, cid, snapshot, tx_manager);
+            std::cout << updated_rows << " row(s) updated." << std::endl;
+            return {};
+        }
+        case LogicalOperatorType::DELETE: {
+            if (!tx_manager.lock_table(tx_id, plan->table_name, LockMode::EXCLUSIVE)) {
+                throw std::runtime_error("Failed to acquire exclusive lock for DELETE.");
+            }
+            int deleted_rows = storage.delete_records(plan->table_name, plan->conditions, tx_id, cid, snapshot, tx_manager);
+            std::cout << deleted_rows << " row(s) deleted." << std::endl;
+            return {};
+        }
+        case LogicalOperatorType::CREATE_INDEX: {
+            storage.create_index(plan->index_name, plan->table_name, plan->index_column);
+            std::cout << "Index created." << std::endl;
+            return {};
+        }
+        case LogicalOperatorType::DROP_TABLE: {
+            storage.drop_table(plan->table_name);
+            std::cout << "Table dropped." << std::endl;
+            return {};
+        }
+        case LogicalOperatorType::DROP_INDEX: {
+            storage.drop_index(plan->index_name);
+            std::cout << "Index dropped." << std::endl;
+            return {};
         }
         default: {
             throw std::runtime_error("Unsupported logical operator");
