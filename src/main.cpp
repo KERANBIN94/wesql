@@ -13,16 +13,15 @@
 // #define DEBUG_PLAN
 
 void print_result_set(const ResultSet& rs) {
+    if (rs.columns.empty()) {
+        std::cout << "Query executed successfully." << std::endl;
+        return;
+    }
+    
     for (const auto& col : rs.columns) {
-        std::cout << col << "\t";
+        std::cout << col.name << "\t";
     }
     std::cout << std::endl;
-    for (const auto& row : rs.rows) {
-        for (const auto& val : row) {
-            std::cout << to_string(val) << "\t";
-        }
-        std::cout << std::endl;
-    }
 }
 
 int main() {
@@ -38,14 +37,34 @@ int main() {
     int current_tx_id = 0;
 
     while (true) {
+        std::string sql_statement;
         std::string sql_line;
-        std::cout << "> ";
-        std::getline(std::cin, sql_line);
-        if (sql_line == "exit") break;
-        if (sql_line.empty()) continue;
+        
+        // Read lines until we get a complete statement (ending with semicolon)
+        do {
+            std::cout << (sql_statement.empty() ? "> " : "  ");
+            std::getline(std::cin, sql_line);
+            if (sql_line == "exit") {
+                if (!sql_statement.empty()) {
+                    std::cout << "Incomplete statement discarded." << std::endl;
+                }
+                goto exit_loop;
+            }
+            if (!sql_line.empty()) {
+                if (!sql_statement.empty()) {
+                    sql_statement += " ";
+                }
+                sql_statement += sql_line;
+            }
+        } while (sql_statement.empty() || sql_statement.back() != ';');
+        
+        // Remove the trailing semicolon for parsing
+        if (!sql_statement.empty() && sql_statement.back() == ';') {
+            sql_statement.pop_back();
+        }
 
         try {
-            auto ast = parse_sql(sql_line);
+            auto ast = parse_sql(sql_statement);
 
 #ifdef DEBUG_AST
             print_ast(ast);
@@ -74,13 +93,8 @@ int main() {
                     in_transaction = false;
                     current_tx_id = 0;
                 }
-                // We can create a dummy plan for execution or handle in executor
-                auto plan = std::make_shared<LogicalPlanNode>(LogicalOperatorType::CREATE_TABLE); // Dummy
-                plan->table_name = ast.type; // Pass command type
-                execute_plan(plan, storage, tx_manager, 0, {});
-
+                std::cout << "Transaction command executed." << std::endl;
             } else {
-                // Auto-commit mode or inside a transaction
                 int tx_id_for_query = in_transaction ? current_tx_id : tx_manager.start_transaction();
                 
                 auto logical_plan = optimizer.optimize(ast, storage);
@@ -107,6 +121,8 @@ int main() {
             }
         }
     }
+    
+exit_loop:
     cache.flush_all();
     cache.print_stats();
     return 0;

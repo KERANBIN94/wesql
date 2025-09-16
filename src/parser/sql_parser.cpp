@@ -9,7 +9,9 @@
 const std::set<std::string> KEYWORDS = {
     "SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE",
     "CREATE", "TABLE", "INDEX", "ON", "DROP", "BEGIN", "START", "COMMIT", "ROLLBACK", "VACUUM",
-    "INT", "INTEGER", "TEXT", "VARCHAR", "AND", "LIKE"
+    "INT", "INTEGER", "TEXT", "VARCHAR", "AND", "LIKE", "NOT", "NULL", "AUTO_INCREMENT",
+    "COMMENT", "DEFAULT", "PRIMARY", "KEY", "UNIQUE", "BIGINT", "TINYINT", "DATETIME",
+    "CURRENT_TIMESTAMP", "ENGINE", "CHARSET", "COLLATE"
 };
 
 std::vector<Token> tokenize(const std::string& sql) {
@@ -22,28 +24,57 @@ std::vector<Token> tokenize(const std::string& sql) {
         char c = sql[i];
 
         if (std::isspace(c)) {
-            if (c == '\n') {
+            if (c == '\r') {
+                // Handle Windows-style line endings (\r\n)
+                if (i + 1 < sql.length() && sql[i + 1] == '\n') {
+                    i++; // Skip \r
+                    i++; // Skip \n
+                    line++;
+                    col = 1;
+                } else {
+                    // Just \r (old Mac style)
+                    line++;
+                    col = 1;
+                    i++;
+                }
+            } else if (c == '\n') {
+                // Unix-style line ending
                 line++;
                 col = 1;
+                i++;
             } else {
+                // Other whitespace
                 col++;
+                i++;
             }
-            i++;
             continue;
         }
 
-        if (c == '"') {
+        if (c == '"' || c == '\'') {
+            char quote = c;
             std::string text;
             text += c;
             i++;
             int start_col = col;
             col++;
-            while (i < sql.length() && sql[i] != '"') {
-                text += sql[i];
-                i++;
-                col++;
+            while (i < sql.length() && sql[i] != quote) {
+                char current_char = sql[i];
+                text += current_char;
+                // Handle Chinese characters and other non-ASCII characters in strings
+                if ((unsigned char)current_char > 127) {
+                    // Multi-byte character, just add it and continue
+                    i++;
+                    col++;
+                } else if (current_char == '\n') {
+                    line++;
+                    col = 1;
+                    i++;
+                } else {
+                    i++;
+                    col++;
+                }
             }
-            if (i < sql.length() && sql[i] == '"') {
+            if (i < sql.length() && sql[i] == quote) {
                 text += sql[i];
                 i++;
                 col++;
@@ -84,6 +115,37 @@ std::vector<Token> tokenize(const std::string& sql) {
             continue;
         }
 
+        // Handle backticks for MySQL identifiers
+        if (c == '`') {
+            std::string text;
+            i++; // skip opening backtick
+            int start_col = col;
+            col++;
+            while (i < sql.length() && sql[i] != '`') {
+                text += sql[i];
+                i++;
+                col++;
+            }
+            if (i < sql.length() && sql[i] == '`') {
+                i++; // skip closing backtick
+                col++;
+                tokens.push_back({TokenType::IDENTIFIER, text, line, start_col});
+            } else {
+                throw std::runtime_error("Unclosed backtick identifier at line " + std::to_string(line) + " col " + std::to_string(start_col));
+            }
+            continue;
+        }
+
+        // Handle SQL comments (-- style)
+        if (c == '-' && i + 1 < sql.length() && sql[i + 1] == '-') {
+            // Skip the rest of the line, allowing Chinese characters and other non-ASCII characters
+            while (i < sql.length() && sql[i] != '\n' && sql[i] != '\r') {
+                i++;
+            }
+            // Don't increment i here, let the whitespace handler deal with line endings
+            continue;
+        }
+
         if (c == '(' || c == ')' || c == ',' || c == ';') {
             tokens.push_back({TokenType::DELIMITER, std::string(1, c), line, col});
             i++;
@@ -108,6 +170,13 @@ std::vector<Token> tokenize(const std::string& sql) {
                 }
             }
             tokens.push_back({TokenType::OPERATOR, op, line, start_col});
+            continue;
+        }
+
+        // Skip non-ASCII characters (like Chinese characters in comments)
+        if ((unsigned char)c > 127) {
+            i++;
+            col++;
             continue;
         }
 
@@ -299,24 +368,123 @@ private:
             node.table_name = consume().text;
             expect("(");
             while (peek().text != ")") {
+                // Check if this is a table-level constraint (PRIMARY KEY, UNIQUE KEY, KEY)
+                std::string first_token = peek_upper();
+                if (first_token == "PRIMARY" && peek_upper(1) == "KEY") {
+                    // Handle table-level PRIMARY KEY
+                    consume(); // PRIMARY
+                    consume(); // KEY
+                    expect("(");
+                    consume(); // column name
+                    expect(")");
+                    if (peek().text == ",") consume();
+                    continue;
+                } else if (first_token == "UNIQUE" && peek_upper(1) == "KEY") {
+                    // Handle table-level UNIQUE KEY
+                    consume(); // UNIQUE
+                    consume(); // KEY
+                    consume(); // key name
+                    expect("(");
+                    consume(); // column name
+                    expect(")");
+                    if (peek().text == ",") consume();
+                    continue;
+                } else if (first_token == "KEY") {
+                    // Handle table-level KEY (index)
+                    consume(); // KEY
+                    consume(); // key name
+                    expect("(");
+                    consume(); // column name
+                    expect(")");
+                    if (peek().text == ",") consume();
+                    continue;
+                }
+                
+                // Regular column definition
                 std::string col_name = consume().text;
                 std::string col_type_str = consume().text;
                 std::transform(col_type_str.begin(), col_type_str.end(), col_type_str.begin(), ::toupper);
 
+                // Handle column type with size specification like VARCHAR(50)
+                if (col_type_str.rfind("VARCHAR", 0) == 0 || col_type_str.rfind("CHAR", 0) == 0) {
+                    // Skip size specification if present
+                    if (peek().text == "(") {
+                        consume(); // (
+                        consume(); // size number
+                        expect(")");
+                    }
+                }
+
                 DataType col_type;
-                if (col_type_str == "INT" || col_type_str == "INTEGER") {
+                if (col_type_str == "INT" || col_type_str == "INTEGER" || col_type_str == "BIGINT" || col_type_str == "TINYINT") {
                     col_type = DataType::INT;
-                } else if (col_type_str.rfind("VARCHAR", 0) == 0 || col_type_str == "TEXT") {
+                } else if (col_type_str.rfind("VARCHAR", 0) == 0 || col_type_str == "TEXT" || col_type_str.rfind("CHAR", 0) == 0) {
                     col_type = DataType::STRING;
+                } else if (col_type_str == "DATETIME") {
+                    col_type = DataType::STRING; // Treat datetime as string for now
                 } else {
                     throw std::runtime_error("Unsupported column type: " + col_type_str);
                 }
                 
                 bool not_null = false;
-                if (peek_upper() == "NOT" && peek_upper(1) == "NULL") {
-                    consume(); // NOT
-                    consume(); // NULL
-                    not_null = true;
+                
+                // Skip various MySQL-specific column attributes
+                while (pos_ < tokens_.size() && peek().text != "," && peek().text != ")") {
+                    std::string attr = peek_upper();
+                    if (attr == "NOT" && peek_upper(1) == "NULL") {
+                        consume(); // NOT
+                        consume(); // NULL
+                        not_null = true;
+                    } else if (attr == "AUTO_INCREMENT") {
+                        consume(); // Skip AUTO_INCREMENT
+                    } else if (attr == "COMMENT") {
+                        consume(); // COMMENT
+                        if (peek().type == TokenType::STRING_LITERAL) {
+                            consume(); // Skip comment string
+                        }
+                    } else if (attr == "DEFAULT") {
+                        consume(); // DEFAULT
+                        if (peek_upper() == "CURRENT_TIMESTAMP") {
+                            consume(); // Skip CURRENT_TIMESTAMP
+                        } else if (peek().type == TokenType::STRING_LITERAL || peek().type == TokenType::INTEGER_LITERAL) {
+                            consume(); // Skip default value
+                        }
+                    } else if (attr == "ON" && peek_upper(1) == "UPDATE") {
+                        consume(); // ON
+                        consume(); // UPDATE
+                        consume(); // CURRENT_TIMESTAMP
+                    } else if (attr == "PRIMARY" && peek_upper(1) == "KEY") {
+                        // Handle PRIMARY KEY inline - skip for now
+                        consume(); // PRIMARY
+                        consume(); // KEY
+                        if (peek().text == "(") {
+                            consume(); // (
+                            consume(); // column name
+                            expect(")");
+                        }
+                    } else if (attr == "UNIQUE" && peek_upper(1) == "KEY") {
+                        // Handle UNIQUE KEY inline - skip for now
+                        consume(); // UNIQUE
+                        consume(); // KEY
+                        consume(); // key name
+                        if (peek().text == "(") {
+                            consume(); // (
+                            consume(); // column name
+                            expect(")");
+                        }
+                    } else if (attr == "KEY") {
+                        // Handle KEY (index) - skip for now
+                        consume(); // KEY
+                        consume(); // key name
+                        if (peek().text == "(") {
+                            consume(); // (
+                            consume(); // column name
+                            expect(")");
+                        }
+                    } else {
+                        // Skip unknown attributes to avoid parsing errors
+                        consume();
+                    }
                 }
 
                 node.columns.push_back({col_name, col_type, not_null});
@@ -324,6 +492,24 @@ private:
                 if (peek().text == ",") consume();
             }
             expect(")");
+            
+            // Skip table options like ENGINE, CHARSET, etc.
+            while (pos_ < tokens_.size() && peek().text != ";") {
+                std::string option = peek_upper();
+                if (option == "ENGINE" || option == "CHARSET" || option == "COLLATE") {
+                    consume(); // option name
+                    if (peek().text == "=") consume(); // =
+                    consume(); // option value
+                } else if (option == "COMMENT") {
+                    consume(); // COMMENT
+                    if (peek().text == "=") consume(); // =
+                    if (peek().type == TokenType::STRING_LITERAL) {
+                        consume(); // comment string
+                    }
+                } else {
+                    break;
+                }
+            }
         } else if (next == "INDEX") {
             node.type = "CREATE_INDEX";
             consume(); // consume INDEX
