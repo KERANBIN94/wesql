@@ -3,6 +3,14 @@
 
 bool LockManager::lock_table(int tx_id, const std::string& table_name, LockMode mode) {
     std::lock_guard<std::mutex> lock(mutex_);
+    
+    // Check if this table has any existing locks
+    if (locks_.find(table_name) == locks_.end()) {
+        // No existing lock, create new one
+        locks_[table_name] = {mode, {tx_id}};
+        return true;
+    }
+    
     auto& lock_info = locks_[table_name];
 
     if (lock_info.first == LockMode::EXCLUSIVE) {
@@ -29,10 +37,8 @@ bool LockManager::lock_table(int tx_id, const std::string& table_name, LockMode 
         return false;
     }
 
-    // No lock
-    lock_info.first = mode;
-    lock_info.second.push_back(tx_id);
-    return true;
+    // This should not happen with explicit initialization
+    return false;
 }
 
 void LockManager::unlock_table(int tx_id, const std::string& table_name) {

@@ -7,8 +7,8 @@
 #include <vector>
 
 enum class LockMode {
-    SHARED,
-    EXCLUSIVE
+    SHARED = 0,
+    EXCLUSIVE = 1
 };
 
 class LockManager {

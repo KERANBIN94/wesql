@@ -5,6 +5,7 @@
 #include <atomic>
 #include <vector>
 #include <mutex>
+#include <algorithm>
 #include "lock_manager.h"
 
 class StorageEngine;

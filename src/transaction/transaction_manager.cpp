@@ -72,7 +72,11 @@ bool TransactionManager::is_aborted(int tx_id) const {
 bool TransactionManager::lock_table(int tx_id, const std::string& table_name, LockMode mode) {
     if (lock_manager_.lock_table(tx_id, table_name, mode)) {
         std::lock_guard<std::mutex> lock(tx_mutex_);
-        tx_locks_[tx_id].push_back(table_name);
+        // Check if this table is already recorded for this transaction
+        auto& tx_table_locks = tx_locks_[tx_id];
+        if (std::find(tx_table_locks.begin(), tx_table_locks.end(), table_name) == tx_table_locks.end()) {
+            tx_table_locks.push_back(table_name);
+        }
         return true;
     }
     return false;
