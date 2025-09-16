@@ -1,4 +1,5 @@
 #include "lock_manager.h"
+#include <vector>
 
 bool LockManager::lock_table(int tx_id, const std::string& table_name, LockMode mode) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -7,8 +8,7 @@ bool LockManager::lock_table(int tx_id, const std::string& table_name, LockMode 
     if (lock_info.first == LockMode::EXCLUSIVE) {
         // Exclusive lock exists
         if (lock_info.second.size() == 1 && lock_info.second[0] == tx_id) {
-            // Same transaction is upgrading lock
-            lock_info.first = mode;
+            // Same transaction already holds exclusive lock
             return true;
         }
         return false;

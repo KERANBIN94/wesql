@@ -4,6 +4,7 @@
 #include <map>
 #include <atomic>
 #include <vector>
+#include <mutex>
 #include "lock_manager.h"
 
 class StorageEngine;
@@ -24,6 +25,7 @@ public:
 
 private:
     std::atomic<int> next_tx_id{1};
+    mutable std::mutex tx_mutex_;  // Protects transaction state
     std::map<int, bool> active_txs;
     std::map<int, int> committed_txs;  // tx_id -> commit time
     std::map<int, bool> aborted_txs;

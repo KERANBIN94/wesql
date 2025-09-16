@@ -6,15 +6,14 @@
 #include <fstream>
 #include <map>
 #include <memory>
-#include "../buffer/buffer_cache.h"
 #include "../index/bplus_tree.h"
 #include "../parser/sql_parser.h"
 #include "../common/value.h"
+#include "../common/page.h"
 
-// Forward declare TransactionManager to avoid circular dependency
+// Forward declarations to avoid circular dependency
 class TransactionManager;
-
-const int PAGE_SIZE = 4096;
+class BufferCache;
 
 struct Record {
     int xmin;
@@ -27,23 +26,6 @@ struct Column {
     std::string name;
     DataType type;
     bool not_null;
-};
-
-struct ItemPointer {
-    uint16_t offset;
-    uint16_t length;
-};
-
-struct PageHeader {
-    uint16_t pd_lower; // Points to start of free space
-    uint16_t pd_upper; // Points to end of free space
-};
-
-struct Page {
-    PageHeader header;
-    std::vector<ItemPointer> item_pointers;
-    bool dirty;
-    char data[PAGE_SIZE - sizeof(PageHeader) - sizeof(std::vector<ItemPointer>)]; // Simplified
 };
 
 
@@ -65,6 +47,7 @@ public:
     void vacuum_table(const std::string& table_name, TransactionManager& tx_manager);
     const std::vector<Column>& get_table_metadata(const std::string& table_name);
     void recover_from_wal();
+    void write_wal(int tx_id, const std::string& operation, const std::string& data);
 
 private:
     BufferCache& cache;
@@ -83,7 +66,6 @@ private:
     void update_page_free_space(const std::string& table_name, int page_id, uint16_t new_free_space);
 
     bool is_visible(const Record& rec, int tx_id, int cid, const std::map<int, int>& snapshot, TransactionManager& tx_manager);
-    void write_wal(int tx_id, const std::string& operation, const std::string& data);
 };
 
 #endif

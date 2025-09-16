@@ -1,10 +1,12 @@
 #include "storage_engine.h"
+#include "../buffer/buffer_cache.h"
 #include "../transaction/transaction_manager.h"
 #include <stdexcept>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <algorithm>
+#include <set>
 #include <iomanip>
 #include <sstream>
 
@@ -84,7 +86,14 @@ void StorageEngine::recover_from_wal() {
 
 void StorageEngine::bootstrap_catalog() {
     std::string sys_tables_path = "data/sys_tables.tbl";
-    if (!std::filesystem::exists(sys_tables_path)) {
+    std::string sys_columns_path = "data/sys_columns.tbl";
+    
+    if (!std::filesystem::exists(sys_tables_path) || !std::filesystem::exists(sys_columns_path)) {
+        // Clear any existing metadata to avoid conflicts
+        metadata.clear();
+        table_files.clear();
+        table_page_counts.clear();
+        
         // Create sys_tables and sys_columns
         std::vector<ColumnDefinition> sys_tables_cols = {{"table_name", DataType::STRING}};
         create_table("sys_tables", sys_tables_cols, 0, 0);
@@ -110,7 +119,7 @@ void StorageEngine::bootstrap_catalog() {
 }
 
 void StorageEngine::load_catalog() {
-    TransactionManager tx_manager; // Dummy tx_manager for loading
+    TransactionManager tx_manager(this); // Dummy tx_manager for loading
     auto tables = scan_table("sys_tables", 0, 0, {}, tx_manager);
     for (const auto& table_rec : tables) {
         std::string table_name = table_rec.columns[0].str_value;
@@ -144,6 +153,9 @@ void StorageEngine::create_table(const std::string& table_name, const std::vecto
     }
     metadata[table_name] = cols;
 
+    // Ensure data directory exists
+    std::filesystem::create_directories("data");
+    
     // Create an empty file for the table
     std::ofstream table_file(file_path);
     if (!table_file) {
@@ -179,9 +191,9 @@ void StorageEngine::create_index(const std::string& table_name, const std::strin
     indexes[index_name] = std::make_unique<BPlusTree>(cache, table_name + "_" + column_name + ".idx");
     
     // Populate the index
-    TransactionManager tx_manager;
+    TransactionManager tx_manager(this);
     auto records = scan_table(table_name, 0, 0, {}, tx_manager); // Simplified call
-    int col_idx = std::distance(cols.begin(), it);
+    int col_idx = static_cast<int>(std::distance(cols.begin(), it));
 
     for(size_t i = 0; i < records.size(); ++i) {
         const auto& rec = records[i];
@@ -214,7 +226,7 @@ void StorageEngine::insert_record(const std::string& table_name, const Record& r
     for (const auto& val : record.columns) {
         ptr = serialize_value(ptr, val);
     }
-    uint16_t record_size = ptr - buffer;
+    uint16_t record_size = static_cast<uint16_t>(ptr - buffer);
 
     *reinterpret_cast<uint16_t*>(buffer) = record_size;
 
@@ -224,8 +236,12 @@ void StorageEngine::insert_record(const std::string& table_name, const Record& r
     page->header.pd_upper -= record_size;
     std::memcpy(page->data + page->header.pd_upper, buffer, record_size);
 
-    page->item_pointers.push_back({page->header.pd_upper, record_size});
-    page->header.pd_lower += sizeof(ItemPointer);
+    // Add item pointer to the array
+    if (page->header.item_count < MAX_ITEM_POINTERS) {
+        page->item_pointers[page->header.item_count] = {page->header.pd_upper, static_cast<uint16_t>(record_size)};
+        page->header.item_count++;
+        page->header.pd_lower += sizeof(ItemPointer);
+    }
     page->dirty = true;
 
     update_page_free_space(table_name, page_id, page->header.pd_upper - page->header.pd_lower);
@@ -241,7 +257,8 @@ std::vector<Record> StorageEngine::scan_table(const std::string& table_name, int
     int page_count = table_page_counts.at(table_name);
     for (int i = 0; i < page_count; ++i) {
         Page* page = cache.get_page(table_files.at(table_name), i);
-        for (const auto& item_ptr : page->item_pointers) {
+        for (int j = 0; j < page->header.item_count; ++j) {
+            const auto& item_ptr = page->item_pointers[j];
             const char* ptr = page->data + item_ptr.offset;
             const char* record_end = ptr + item_ptr.length;
             Record rec;
@@ -253,7 +270,7 @@ std::vector<Record> StorageEngine::scan_table(const std::string& table_name, int
             rec.cid = *reinterpret_cast<const int*>(ptr); ptr += sizeof(int);
 
             const auto& cols = get_table_metadata(table_name);
-            for (size_t j = 0; j < cols..size() && ptr < record_end; ++j) {
+            for (size_t k = 0; k < cols.size() && ptr < record_end; ++k) {
                 Value val;
                 ptr = deserialize_value(ptr, val);
                 rec.columns.push_back(val);

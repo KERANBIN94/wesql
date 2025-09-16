@@ -5,6 +5,7 @@
 #include "../storage/storage_engine.h"
 #include "../transaction/transaction_manager.h"
 #include <map>
+#include <vector>
 
 struct ResultSet {
     std::vector<std::string> columns;
