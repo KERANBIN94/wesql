@@ -51,13 +51,14 @@ void LockManager::unlock_table(int tx_id, const std::string& table_name) {
             locks_.erase(table_name);
         }
     } else if (lock_info.first == LockMode::SHARED) {
-        for (auto it = lock_info.second.begin(); it != lock_info.second.end(); ++it) {
+        auto& tx_ids = lock_info.second;
+        for (auto it = tx_ids.begin(); it != tx_ids.end(); ++it) {
             if (*it == tx_id) {
-                lock_info.second.erase(it);
+                tx_ids.erase(it);
                 break;
             }
         }
-        if (lock_info.second.empty()) {
+        if (tx_ids.empty()) {
             locks_.erase(table_name);
         }
     }
