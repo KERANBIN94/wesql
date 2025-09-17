@@ -32,7 +32,16 @@ int main() {
     TransactionManager tx_manager(&storage);
     Optimizer optimizer(storage);
 
+    std::cout << std::endl;
+    std::cout << " __        __ _____  ____    ___   _     \n";
+    std::cout << " \\ \\      / /| ____|/ ___|  / _ \\ | |    \n";
+    std::cout << "  \\ \\ /\\ / / |  _|  \\___ \\ | | | || |    \n";
+    std::cout << "   \\ V  V /  | |___  ___) || |_| || |___ \n";
+    std::cout << "    \\_/\\_/   |_____||____/  \\___/ |_____|\n";
+    std::cout <<  std::endl;
+
     std::cout << "wesql DB. Enter SQL or 'exit' to quit." << std::endl;
+
 
     bool in_transaction = false;
     int current_tx_id = 0;
